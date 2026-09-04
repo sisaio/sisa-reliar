@@ -161,8 +161,10 @@ jobs:
     steps: [ { uses: actions/checkout@v7 }, { uses: actions/dependency-review-action@v5, with: { fail-on-severity: high } } ]
 ```
 
-`codeql.yaml`: `github/codeql-action/init@v4` (v4 is the Node-24 line) with `languages: rust` (+ `actions`), build via `cargo build
---workspace --all-features`, then `codeql-action/analyze`; on push to main, PRs, and a weekly cron.
+`codeql.yaml`: `github/codeql-action/init@v4` (v4 is the Node-24 line) with `languages: rust` (+ `actions`) and
+**`build-mode: none`** — the Rust extractor analyzes source without building and rejects `manual`/`autobuild`
+("Rust does not support the manual build mode"), so no toolchain, cache or `cargo build` step — then
+`codeql-action/analyze`; on push to main, PRs, and a weekly cron.
 `scorecard.yaml`: `ossf/scorecard-action` publishing SARIF to code scanning (weekly + on main).
 `.github/dependabot.yml`: `cargo` and `github-actions` ecosystems, weekly, grouped minor/patch updates.
 
