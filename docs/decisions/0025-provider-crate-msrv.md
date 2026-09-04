@@ -34,7 +34,7 @@ dependency rule (conventions §2) pointing the right way and the MSRV pointing t
 **Pure crates keep the workspace MSRV. Provider crates may declare the MSRV of their driver.**
 
 1. `[workspace.package].rust-version` stays the floor for every crate that does not wrap a driver:
-   `reliar-core`, `reliar-outbox`, and the `-inbox` / `-idempotency` / `-cache` crates when they
+   `reliar-core`, `reliar-outbox`, and the `-inbox` / `-idempotency` crates when they
    exist. They **may not** raise it locally; a pure crate that needs a newer toolchain is a signal to
    move the workspace floor through an ADR, per 0024.
 

@@ -18,7 +18,7 @@ host layers files, then env, then flags, and then Reliar quietly reads env again
 ## Decision
 
 - **One `*Settings` struct per feature** — `OutboxSettings`, `DispatcherSettings`,
-  `PostgresOutboxSettings`; later `InboxSettings`, `IdempotencySettings`, `CacheSettings`. The
+  `PostgresOutboxSettings`; later `InboxSettings`, `IdempotencySettings`. The
   v1.1-draft name `DispatcherConfig` is retired: one name for one thing.
 - Each is `#[non_exhaustive]` + `Debug` + `Clone` + `Default` (the accepted §23.1 defaults) + **builder
   methods** (`fn lease(mut self, d: Duration) -> Self`), so adding a field is never a breaking change.
@@ -67,7 +67,7 @@ host layers files, then env, then flags, and then Reliar quietly reads env again
 - **Implicit `from_env` inside `Default`/`new`.** Rejected: silently overrides the host's own
   configuration precedence and makes tests depend on the ambient environment.
 - **A single global `ReliarConfig`.** Rejected: couples unrelated features and forces the inbox and
-  cache crates to exist before they are built.
+  idempotency crates to exist before they are built.
 - **Panic on invalid settings.** Rejected: a library must not abort its host; `build()` returns an
   error the host can log and act on.
 - **`humantime`-style duration strings.** Rejected: a new dependency and an ambiguous parse for a

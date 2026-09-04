@@ -53,7 +53,7 @@ reliar-store-postgres  → reliar-outbox, reliar-core, sqlx, time, tracing
 - **`reliar-outbox` never depends on a provider**, and a provider never depends on another provider.
 - Phase 1 creates **exactly these three crates** plus `examples/outbox-basic`,
   `examples/axum-outbox`, and `tests/system`. No `reliar`, `reliar-inbox`, `reliar-idempotency`,
-  `reliar-cache`, `reliar-transport-*` (SRS §6: crates are created when implementation begins).
+  `reliar-transport-*` (SRS §6: crates are created when implementation begins).
 
 **`reliar-outbox` does not depend on `bytes`** (confirmed 2026-09-04). It handles payloads only as
 the opaque `SerializedEnvelope` re-exported from `reliar-core`, and never names `bytes::Bytes` in
@@ -1706,7 +1706,7 @@ on any hot path.
 
 `Ordering::PerKey`'s implementation (0.2) · `ensure_partitions` and the partitioned DDL (0.2,
 ADR 0016) · the `reliar` facade crate (0.2) · any `EnvelopeMapper` implementation, `NatsPublisher`,
-or `SubjectResolver` (Phase 2) · `InboxStore`, `IdempotencyStore`, `CacheStore`, `Handler`,
+or `SubjectResolver` (Phase 2) · `InboxStore`, `IdempotencyStore`, `Handler`,
 `reliar-messaging` (Phases 3–5) · a `Clock` trait (never — ADR 0009) · message-version negotiation
 on read (Phase 3) · `enqueue_ignore_duplicates` · per-`message_type` retry policies.
 

@@ -1,6 +1,6 @@
 # sisa-reliar
 
-High-performance Rust toolkit for transactional outbox, inbox, idempotency, caching, durable
+High-performance Rust toolkit for transactional outbox, inbox, idempotency, durable
 messaging, and SQL-first background jobs.
 
 **Status: pre-0.1, Phase 1 in progress** — the workspace, toolchain, and CI are in place; the

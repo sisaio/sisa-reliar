@@ -23,14 +23,14 @@ jobs:
     name: repository conventions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@v7
       # Decision #22 / SRS §43.B: every YAML file uses the .yaml extension.
       #
       # Exactly one exception, whitelisted by full path: `.github/dependabot.yml`. GitHub's
       # documentation gives the config path as `.github/dependabot.yml` on every page that names
       # it and never mentions `.yaml` (verified 2026-09-04, RELIAR-21). A `.yaml` file there is
-      # not rejected — it is silently ignored, so Dependabot simply never runs and the SHA-pinned
-      # actions and the cargo tree quietly stop being updated. A silent security-update failure is
+      # not rejected — it is silently ignored, so Dependabot simply never runs and the action
+      # version tags and the cargo tree quietly stop being updated. A silent security-update failure is
       # not worth one spelling. ADR 0022 carries the reasoning; the whitelist is an exact path so
       # a second `.yml` cannot appear beside it.
       - name: no .yml files
@@ -72,16 +72,16 @@ jobs:
       # builds on current stable, which is where new lints appear first.
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo check --workspace --all-targets --all-features
       - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo doc --workspace --no-deps --all-features
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack,cargo-machete
       - run: cargo hack check --workspace --feature-powerset --no-dev-deps
@@ -91,9 +91,9 @@ jobs:
     name: reliar-core stays pure
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       # No-op until reliar-core exists; the dependency rule (skill rust-library-design) is a
       # hard gate from the moment it does. --prefix none prints one bare `name vX.Y.Z` per line,
       # so the pattern anchors on the package name and cannot match a path or a feature string.
@@ -124,11 +124,11 @@ jobs:
       # `time` needs it.
       MSRV: "1.88"
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.MSRV }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@v2
       # `+$MSRV` is required: rust-toolchain.toml otherwise pins every cargo invocation.
       # The exclusion list is computed, never hard-coded — see scripts/msrv-exclusions.py for why.
       # The whole gate rests on "is this package's MSRV above the floor?", and the failure mode of

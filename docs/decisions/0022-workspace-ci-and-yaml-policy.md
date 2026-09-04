@@ -1,8 +1,9 @@
 # ADR 0022 — Workspace layout, build profiles, semver policy, and the CI/YAML rules
 
-**Status:** Accepted — 2026-09-04; the `rust-version` clause is superseded by [ADR 0024](0024-msrv-1-88-and-msrv-policy.md)
+**Status:** Accepted — 2026-09-04; the `rust-version` clause is superseded by [ADR 0024](0024-msrv-1-88-and-msrv-policy.md);
+the **action-pinning clause is superseded by human decision #30 (2026-09-04)** — see *Action references* below
 **SRS:** §6, §7, §7.1, §32, §38, §39, §40, §41, §44, §43.B
-**Decisions:** human decisions 6, 8, 20, 21, 22, 23
+**Decisions:** human decisions 6, 8, 20, 21, 22, 23, 30
 
 ## Context
 
@@ -77,8 +78,20 @@ host.**
 
 - `.github/workflows/` contains **`ci.yaml`, `test.yaml`, `security.yaml`, `codeql.yaml`,
   `scorecard.yaml`, `release.yaml`**, plus `.github/dependabot.yml` (the one `.yml`, see below). `test.yaml` provides a
-  PostgreSQL service container and exports `DATABASE_URL`. Third-party actions are **SHA-pinned**
-  and every workflow declares **least-privilege `permissions`**.
+  PostgreSQL service container and exports `DATABASE_URL`. Every workflow declares
+  **least-privilege `permissions`**. Action references: see *Action references* below.
+- **Action references — superseded clause** *(amended 2026-09-04, decision #30)*. This ADR
+  originally required third-party actions to be **SHA-pinned**, on the Scorecard/supply-chain
+  argument that a tag is mutable. **The human reversed that:** every `uses:` now names the action's
+  **latest major version tag** (`actions/checkout@v7`, `github/codeql-action/init@v4`,
+  `codecov/codecov-action@v7`, …). `dtolnay/rust-toolchain@stable` / `@master` remain branch refs
+  by upstream design, and `ossf/scorecard-action@v2.4.4` keeps its exact patch tag because upstream
+  publishes no floating `v2` tag. The reasoning accepted: the workflows become readable and
+  maintainable and a Dependabot bump is a one-token diff, at the **known cost of OpenSSF
+  Scorecard's `Pinned-Dependencies` check**, which only credits immutable references and will
+  therefore not score full marks. The compensating control is unchanged and still required —
+  `.github/dependabot.yml` keeps the **`github-actions` ecosystem** enabled (weekly, all actions
+  grouped), so a new major arrives as a PR rather than as rot.
 - **Every YAML file in the repository ends in `.yaml`, never `.yml`** — workflows, compose, configs.
   One spelling, so a glob never misses a file; a glob matching `*.yml` **fails the build**.
   **One exception, and only one: `.github/dependabot.yml`** *(added 2026-09-04, RELIAR-21)*.
@@ -88,7 +101,7 @@ host.**
   repository") and "Keeping your actions up to date with Dependabot" ("Check the `dependabot.yml`
   configuration file in to the `.github` directory of the repository") — and **never** mentions
   `.yaml`. The failure mode decides it: a `.yaml` file in that location is not rejected, it is
-  *ignored*, so Dependabot never runs, no error is raised anywhere, and the SHA-pinned actions and
+  *ignored*, so Dependabot never runs, no error is raised anywhere, and the action version tags and
   the dependency tree quietly stop being updated. Trading a silent security-update failure for one
   spelling is not a trade worth making, and relying on undocumented behaviour for a mechanism whose
   failure is invisible is worse still. The CI gate whitelists the **exact path**, not the
@@ -115,7 +128,7 @@ host.**
 - The **facade crate `reliar` is deferred to 0.2** (decision 8) — a facade's feature-forwarding
   surface is the hardest thing to keep semver-stable and it has nothing to re-export until three
   crates exist. Its crates.io name is reserved now with a `0.0.0` placeholder, along with
-  `reliar-core`, `-outbox`, `-inbox`, `-idempotency`, `-cache`, `-store-postgres`,
+  `reliar-core`, `-outbox`, `-inbox`, `-idempotency`, `-store-postgres`,
   `-transport-nats` (all checked free 2026-09-03).
 
 ## Consequences

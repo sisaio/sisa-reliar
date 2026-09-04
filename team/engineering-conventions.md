@@ -168,8 +168,12 @@ exporter dependency inside library crates — the application wires exporters.
 ## 10a. Layout hygiene
 
 Infra under `deploy/docker/` and `deploy/compose/` (+ `configs/`, `secrets/`, `volumes/`). **All YAML
-files use `.yaml`** — never `.yaml`. Root `Cargo.toml` declares explicit `dev`/`test`/`release`/`bench`
-profiles (see skill `ci-release`).
+files use `.yaml`** — never `.yml`, with the single GitHub-mandated exception `.github/dependabot.yml`.
+Root `Cargo.toml` declares explicit `dev`/`test`/`release`/`bench` profiles (see skill `ci-release`).
+**GitHub Actions are referenced by their latest major version tag** (`actions/checkout@v7`), never by
+commit SHA — decision #30 (2026-09-04) reversing ADR 0022; `dtolnay/rust-toolchain@stable`/`@master`
+stay branch refs and `ossf/scorecard-action` takes its exact patch tag (no floating major exists).
+Dependabot's `github-actions` ecosystem keeps the majors current; new majors must run on **Node 24**.
 
 ## 11. Public API & releases (SRS §7, §40, §44)
 

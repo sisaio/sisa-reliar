@@ -46,8 +46,14 @@ The `bans` entries turn house rules into a gate (adjust `wrappers` to the crates
   `deploy/compose/` (`docker-compose.yaml` plus `configs/`, `secrets/` (git-ignored, `*.example` committed),
   `volumes/` when needed). No top-level `docker/`.
 - Workflows are split by responsibility: `ci.yaml` · `test.yaml` · `security.yaml` · `codeql.yaml` ·
-  `scorecard.yaml` · `release.yaml`, plus `.github/dependabot.yml`. Pin third-party actions to a SHA
-  (Dependabot keeps them fresh); set `permissions: read-all` at the top and widen per job.
+  `scorecard.yaml` · `release.yaml`, plus `.github/dependabot.yml`. **Reference every action by its
+  latest major version tag** (`actions/checkout@v7`) — **not** a commit SHA (human decision #30,
+  2026-09-04, superseding ADR 0022's SHA clause; the accepted cost is OpenSSF Scorecard's
+  `Pinned-Dependencies` check). Exceptions by upstream design: `dtolnay/rust-toolchain@stable` /
+  `@master` are branch refs, and `ossf/scorecard-action` publishes no floating major tag so it takes
+  the exact patch tag (`@v2.4.4`). Dependabot's `github-actions` ecosystem bumps the majors.
+  Before adopting a new major, read its README for removed inputs and check `runs.using` is
+  `node24` — GitHub is deprecating Node 20. Set `permissions: read-all` at the top and widen per job.
 
 ## Root `Cargo.toml` profiles (explicit, documented)
 
@@ -85,7 +91,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable        # reads rust-toolchain.toml
         with: { components: rustfmt, clippy }
       - uses: Swatinem/rust-cache@v2
@@ -101,7 +107,7 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.85" }               # = rust-version
       - run: cargo check --workspace --all-features
@@ -124,12 +130,12 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info   # runs the tests; provider tests use DATABASE_URL
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@v7
         with: { files: lcov.info, fail_ci_if_error: false }
       - uses: taiki-e/install-action@v2
         with: { tool: sqlx-cli }
@@ -147,15 +153,15 @@ Later phases add a `nats:2-alpine` service (`-js`) and `NATS_URL`.
 name: security
 on: { push: { branches: [main] }, pull_request: { paths: ["**/Cargo.toml", "Cargo.lock", "deny.toml"] }, schedule: [{ cron: "0 6 * * 1" }] }
 jobs:
-  deny:  { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v4 }, { uses: EmbarkStudios/cargo-deny-action@v2 } ] }
-  audit: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v4 }, { uses: rustsec/audit-check@v2, with: { token: "${{ secrets.GITHUB_TOKEN }}" } } ] }
+  deny:  { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v7 }, { uses: EmbarkStudios/cargo-deny-action@v2 } ] }
+  audit: { runs-on: ubuntu-latest, steps: [ { uses: actions/checkout@v7 }, { uses: rustsec/audit-check@v2, with: { token: "${{ secrets.GITHUB_TOKEN }}" } } ] }
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    steps: [ { uses: actions/checkout@v4 }, { uses: actions/dependency-review-action@v4, with: { fail-on-severity: high } } ]
+    steps: [ { uses: actions/checkout@v7 }, { uses: actions/dependency-review-action@v5, with: { fail-on-severity: high } } ]
 ```
 
-`codeql.yaml`: `github/codeql-action/init` with `languages: rust` (+ `actions`), build via `cargo build
+`codeql.yaml`: `github/codeql-action/init@v4` (v4 is the Node-24 line) with `languages: rust` (+ `actions`), build via `cargo build
 --workspace --all-features`, then `codeql-action/analyze`; on push to main, PRs, and a weekly cron.
 `scorecard.yaml`: `ossf/scorecard-action` publishing SARIF to code scanning (weekly + on main).
 `.github/dependabot.yml`: `cargo` and `github-actions` ecosystems, weekly, grouped minor/patch updates.
@@ -171,7 +177,7 @@ squatting is a real risk for a prefix this short.
 
 The release job also uploads **`reliar-store-postgres-migrations-<version>.tar.gz`** (the crate's
 `migrations/*.sql` + `SHA256SUMS`) as a GitHub Release asset with build provenance
-(`actions/attest-build-provenance`) for teams that run migrations through their own pipeline; the
+(`actions/attest-build-provenance@v4`) for teams that run migrations through their own pipeline; the
 embedded copy in the crate stays the source of truth.
 
 Add `cargo semver-checks` (`obi1kenobi/cargo-semver-checks-action`) to `ci.yaml` once a version is
@@ -195,7 +201,7 @@ services:
 
 ## Definition of done (platform change)
 
-- [ ] Workflows stay split by responsibility; every job runs on PRs; caches enabled; actions SHA-pinned; least-privilege `permissions`.
+- [ ] Workflows stay split by responsibility; every job runs on PRs; caches enabled; actions on their latest major version tag (Node-24 majors, decision #30); least-privilege `permissions`.
 - [ ] All YAML files use `.yaml`; infra is under `deploy/docker` + `deploy/compose`; root `Cargo.toml` profiles explicit.
 - [ ] CodeQL, dependency review, Scorecard, Dependabot and coverage are wired.
 - [ ] House rules enforced as gates: `deny.toml` bans, core-purity grep, feature-powerset, MSRV job, doc `-D warnings`.

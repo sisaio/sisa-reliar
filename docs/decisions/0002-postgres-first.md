@@ -17,7 +17,7 @@ release can prove the entire reliability model against a real database and a fak
 ## Decision
 
 - **v0.1 ships exactly one store provider: `reliar-store-postgres`**, and no transport provider.
-  `reliar-inbox`, `-idempotency`, `-cache`, `-store-mysql`, `-transport-*` are not created in
+  `reliar-inbox`, `-idempotency`, `-store-mysql`, `-transport-*` are not created in
   Phase 1 (§6: crates are created when their implementation begins).
 - The portable seam is drawn where it is actually needed: `OutboxStore` (the dispatcher's side)
   is provider-agnostic; `enqueue` is a provider-inherent method on

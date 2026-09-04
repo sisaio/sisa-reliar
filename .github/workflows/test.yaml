@@ -53,14 +53,14 @@ jobs:
       # connection's search_path, so a DSN without it exercises a different schema than the code.
       DATABASE_URL: postgres://reliar:reliar@localhost:5432/reliar?options=-c%20search_path%3Dreliar,public
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@v7
       # rust-toolchain.toml pins the channel for every cargo call, and llvm-tools-preview lives
       # there for cargo-llvm-cov; installing `stable` here would be silently overridden, so the
       # pinned toolchain is installed deliberately instead.
       - name: install the pinned toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
       # Keyed on the **provider crate**, which is what actually has to exist for a migration to
@@ -86,7 +86,7 @@ jobs:
         if: steps.probe.outputs.exists == 'true'
         run: cargo run -p reliar-migrate
       - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+      - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -111,10 +111,10 @@ jobs:
     env:
       DATABASE_URL: postgres://reliar:reliar@localhost:5432/reliar?options=-c%20search_path%3Dreliar,public
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@v7
       - name: install the pinned toolchain
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@v2
       # Keyed on the provider crate alone. The previous `&&` with `reliar-migrate` — a package
       # that did not exist — made this probe permanently false, so the sqlx-cli install, the
       # migration and `cargo sqlx prepare --check` were all skipped and the Definition-of-Done
@@ -130,7 +130,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "reliar-store-postgres does not exist yet — skipping"
           fi
-      - uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b # v2
+      - uses: taiki-e/install-action@v2
         if: steps.probe.outputs.exists == 'true'
         with:
           tool: sqlx-cli
