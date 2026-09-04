@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             current_setting('search_path') AS \"search_path!\",\n             (SELECT n.nspname\n                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n               WHERE c.oid = to_regclass('outbox')) AS resolved_schema,\n             (to_regclass($1) IS NOT NULL) AS \"configured_exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "search_path!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "resolved_schema",
+        "type_info": "Name",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "configured_exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9c7b0ef13f6e8e47e5af3b0e685011271bf86323ef0c10ac8d950afd9ab661e1"
+}

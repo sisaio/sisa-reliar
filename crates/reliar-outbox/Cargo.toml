@@ -1,0 +1,60 @@
+[package]
+name = "reliar-outbox"
+version = "0.1.0"
+description = "Storage-agnostic transactional outbox: OutboxStore/Publisher contracts, retry policy, settings and dispatcher (no storage or transport dependency)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+## `serde` derive on the settings types (`OutboxSettings`, `DispatcherSettings`,
+## `RetentionSettings`), `#[serde(default, deny_unknown_fields)]`, durations as integer
+## milliseconds.
+serde = ["dep:serde", "serde/std"]
+## In-memory fakes (`InMemoryOutboxStore`, `RecordingPublisher`, `ScriptedPublisher`,
+## `RecordingMetrics`) for provider crates, examples and this crate's own tests. `tokio` is now an
+## unconditional dependency (the dispatcher worker loop needs it), so this feature no longer needs
+## to enable it itself.
+test-support = []
+## `metrics`-facade adapter for `OutboxMetrics`. Empty until an adapter ships — no `metrics` crate
+## dependency is pulled in yet.
+metrics = []
+
+[dependencies]
+reliar-core = { workspace = true }
+uuid.workspace = true
+time.workspace = true
+tracing.workspace = true
+serde = { workspace = true, optional = true }
+# The dispatcher worker loop's runtime: `Semaphore`, `JoinSet`, `time::{sleep_until, timeout,
+# interval}`, `select!`. `tokio-util` is `CancellationToken` only. Also used by the `test-support`
+# fakes' paused-clock `sleep` points and `ScriptedPublisher::PublishStep::Hang`.
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+bytes.workspace = true
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tokio-util.workspace = true
+# A recording `fmt` subscriber captured into an in-memory buffer, for §43.A.26: no span field,
+# event, or `Debug`/`Display` output on the dispatcher's paths may contain payload bytes, header
+# values, or a connection string.
+tracing-subscriber.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
+
+[[bench]]
+name = "outbox_throughput"
+harness = false
+required-features = ["test-support"]

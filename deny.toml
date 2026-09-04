@@ -1,0 +1,58 @@
+# cargo-deny — house rules as a gate. Run: cargo deny check
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  # CDLA-Permissive-2.0 is a *data* licence, not a code one: it covers `webpki-roots`, which is
+  # the Mozilla CA root store shipped as data and reaches us through sqlx's TLS support. It is
+  # permissive with no copyleft and no share-alike on anything derived from the data, so it
+  # imposes nothing on Reliar's users. Allowed here rather than by ADR because, unlike MPL-2.0
+  # below, it raises no vendoring or static-linking question.
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+# MPL-2.0 is deliberately absent: it is file-level copyleft, and a downstream vendoring or
+# static-linking story is a question Reliar's users should not have to answer. If a dependency
+# ever needs it, it gets an ADR, not a quiet allow-list entry.
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# `async-trait`, `thiserror` and `anyhow` are NOT banned here.
+#
+# They are *house style* rules — "no crate under crates/* may declare them as a dependency" — and
+# cargo-deny's bans are evaluated over the whole resolved graph, which is a different question.
+# sqlx-core depends on thiserror, so a graph-wide ban fails the build over a third party's internal
+# choice that is invisible to us and harmless. Keeping the ban with `wrappers = ["sqlx-core", …]`
+# would work but grows a maintenance tail: every sqlx bump that adds an internal crate reddens an
+# unrelated PR. The rule is per-manifest, so it is enforced per-manifest — see the
+# "no house-banned crates in library manifests" step in .github/workflows/ci.yaml, which is
+# *stricter* for our code (it catches a direct dependency in one of our crates even when some
+# third party already pulls the same crate transitively). ADR 0022 records the choice.
+deny = [
+  # A different rule, deliberately graph-wide: `time` is the project's date/time crate
+  # (decision #7), and two datetime stacks in one binary is an ecosystem-hygiene problem rather
+  # than a style preference. Nothing in the graph pulls chrono today; if a legitimate dependency
+  # ever needs it, add it to `wrappers` here with a justification rather than dropping the ban.
+  { name = "chrono" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

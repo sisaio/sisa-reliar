@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM outbox WHERE id IN (\n               SELECT id FROM outbox\n                WHERE published_at IS NOT NULL\n                  AND published_at < now() - ($1::bigint * interval '1 millisecond')\n                LIMIT $2\n           )\n           AND published_at IS NOT NULL\n           AND published_at < now() - ($1::bigint * interval '1 millisecond')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "84d0504d65d8ef61ba0d7def1b6328bbc070b0695e521805bfe53376521b0802"
+}

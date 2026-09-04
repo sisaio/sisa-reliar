@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE outbox o\n              SET dead_at      = now(),\n                  dead_reason  = $4,\n                  last_error   = f.err,\n                  locked_by    = NULL,\n                  locked_until = NULL,\n                  updated_at   = now()\n             FROM UNNEST($1::uuid[], $2::text[]) AS f(id, err)\n            WHERE o.id = f.id AND o.locked_by = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "693175f263a70d7b9162e0feb60a9dcb06ef163d3be4acc8a712827ca19b3808"
+}

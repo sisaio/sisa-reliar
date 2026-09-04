@@ -1,0 +1,7 @@
+# Must match [workspace.package].rust-version (ADR 0024).
+msrv = "1.88"
+
+# The workspace denies unwrap/expect/panic in library code; tests assert with them.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

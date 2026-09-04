@@ -1,0 +1,98 @@
+[workspace]
+resolver = "3"
+# `tests/*` joins this list when the first system-test package lands; Cargo rejects a glob that
+# matches nothing, so each glob is added with its first member.
+members = ["crates/*", "examples/*", "tools/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"  # ADR 0024 — forced by RUSTSEC-2026-0009 (time >= 0.3.47)
+license = "MIT"
+repository = "https://github.com/sisaio/sisa-reliar"
+authors = ["Sisa"]
+homepage = "https://github.com/sisaio/sisa-reliar"
+categories = ["asynchronous", "database"]
+keywords = ["outbox", "inbox", "idempotency", "messaging", "postgres"]
+
+# One version per dependency; crates inherit with `dep.workspace = true`.
+# Reliar's own crates are added here (with `path` + `version`) as they are created.
+[workspace.dependencies]
+tokio = { version = "1.53", default-features = false, features = ["rt", "sync", "time", "macros"] }
+tokio-util = { version = "0.7", default-features = false }
+bytes = "1.12"
+uuid = { version = "1.26", default-features = false, features = ["v7", "std"] }
+# Floor is the RUSTSEC-2026-0009 patch (RFC 2822 parsing stack exhaustion, fixed in 0.3.47).
+time = { version = "0.3.47", default-features = false, features = ["std"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
+metrics = "0.24"
+sqlx = { version = "0.9", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls",
+  "postgres",
+  "uuid",
+  "time",
+  "json",
+  "macros",
+  "migrate",
+] }
+
+# testcontainers-modules 0.15 requires testcontainers ^0.27 (checked against crates.io); keep the
+# two in lockstep or `cargo metadata` fails workspace-wide.
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+criterion = "0.8"
+proptest = "1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# `examples/` only — library crates never depend on either (house style, `team/engineering-conventions.md` §1).
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+anyhow = "1"
+
+reliar-core = { path = "crates/reliar-core", version = "0.1.0", default-features = false }
+reliar-outbox = { path = "crates/reliar-outbox", version = "0.1.0" }
+reliar-store-postgres = { path = "crates/reliar-store-postgres", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# The library must never take a host process down; return errors instead.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+# Optimize dependencies once so the inner loop (sqlx macros, testcontainers) stays fast.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+inherits = "dev"
+opt-level = 1
+
+# Profiles apply to builds *in this workspace* (benches, examples, the test binaries) only —
+# a downstream application's own profile governs how Reliar is compiled into it.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+# Line tables, not stripped: benchmark and example backtraces stay readable, and the size cost
+# does not reach any published artifact.
+debug = "line-tables-only"
+strip = "none"
+# Documents the intent — a library must never force `abort` on its hosts. Cargo ignores this for
+# a dependency, so the crates additionally avoid panicking paths (see [workspace.lints.clippy]).
+panic = "unwind"
+
+[profile.bench]
+inherits = "release"
+debug = true

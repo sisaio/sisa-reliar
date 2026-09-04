@@ -1,0 +1,59 @@
+[package]
+name = "reliar-core"
+version = "0.1.0"
+description = "Pure envelope/message model shared by every Reliar crate — no storage or transport dependency."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["json"]
+## `JsonSerializer`, Reliar's default `Serializer` implementation.
+json = ["dep:serde_json"]
+## `Serialize`/`Deserialize` on `Metadata` and its parts, for a host that wants to persist or
+## log them itself. Not required by any Reliar API; `reliar-store-postgres` defines its own
+## private JSONB shape independent of this feature (see `Metadata` rustdoc). Enables `serde/std`
+## explicitly rather than relying on another dependency (e.g. `serde_json` via `json`) to pull it
+## in through feature unification.
+serde = ["serde/std", "time/parsing", "time/formatting", "time/serde-human-readable"]
+
+[dependencies]
+bytes.workspace = true
+uuid.workspace = true
+time.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "serialization"
+harness = false
+required-features = ["json"]
+
+[[test]]
+name = "metadata_serde_round_trip"
+required-features = ["serde"]
+
+[[test]]
+name = "metadata_serde_tolerates_partial_json"
+required-features = ["serde"]
+
+[[test]]
+name = "correlation_id_serde_rejects_overlong"
+required-features = ["serde"]
+
+[[test]]
+name = "serde_rejects_invalid_endpoint_address_and_content_type"
+required-features = ["serde"]

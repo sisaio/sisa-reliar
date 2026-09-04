@@ -1,0 +1,93 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions: read-all
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  # release-plz bumps versions from conventional commits, updates CHANGELOG.md, tags, and
+  # publishes in dependency order (reliar-core → reliar-outbox → reliar-store-postgres → …).
+  release-plz:
+    name: release-plz
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      releases: ${{ steps.release.outputs.releases }}
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: release-plz release
+        id: release
+        uses: release-plz/action@b5543c19b03be9bd48852d20ca89f478b7723260 # v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: release-plz release-pr
+        uses: release-plz/action@b5543c19b03be9bd48852d20ca89f478b7723260 # v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # The migrations embedded in the crate stay the source of truth; this asset only serves teams
+  # that run migrations through their own pipeline. Guarded until the provider crate exists.
+  migration-artifact:
+    name: migration scripts
+    needs: release-plz
+    if: needs.release-plz.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: package migrations
+        id: package
+        run: |
+          set -euo pipefail
+          crate_dir=crates/reliar-store-postgres
+          if [ ! -d "$crate_dir/migrations" ]; then
+            echo "no migrations to publish yet — skipping"
+            echo "packaged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          version=$(printf '%s' "$metadata" \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="reliar-store-postgres"))')
+          archive="reliar-store-postgres-migrations-${version}.tar.gz"
+          (cd "$crate_dir/migrations" && sha256sum ./*.sql > SHA256SUMS)
+          tar -czf "$archive" -C "$crate_dir" migrations
+          {
+            echo "packaged=true"
+            echo "archive=$archive"
+            echo "tag=reliar-store-postgres-v${version}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: steps.package.outputs.packaged == 'true'
+        with:
+          subject-path: ${{ steps.package.outputs.archive }}
+      - name: upload to the release
+        if: steps.package.outputs.packaged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.package.outputs.tag }}" "${{ steps.package.outputs.archive }}" --clobber

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE outbox\n              SET dead_at      = now(),\n                  dead_reason  = $2,\n                  last_error   = 'reliar: expired before publication',\n                  locked_by    = NULL,\n                  locked_until = NULL,\n                  updated_at   = now()\n            WHERE id IN (\n                SELECT id FROM outbox\n                 WHERE expires_at IS NOT NULL AND expires_at < now()\n                   AND published_at IS NULL AND dead_at IS NULL\n                   AND (locked_until IS NULL OR locked_until < now())\n                 LIMIT $1\n            )\n              AND published_at IS NULL AND dead_at IS NULL\n              AND (locked_until IS NULL OR locked_until < now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "95fecf4e478323198f34c35e5a2e806e5267dde47f4d8e58a55c53f06120d714"
+}

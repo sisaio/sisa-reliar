@@ -1,0 +1,59 @@
+name: reliar-dev
+
+# Local infrastructure for running the examples and for manual exploration.
+# It is deliberately NOT the database the tests use: SRS §8.2 forbids testing against a shared or
+# long-lived database, so provider tests boot their own ephemeral container via testcontainers.
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    env_file: [configs/postgres.env]
+    secrets: [postgres_password]
+    ports: ["127.0.0.1:5432:5432"]
+    volumes:
+      # PostgreSQL 18 images moved PGDATA to /var/lib/postgresql/<major>/docker, so the persistent
+      # mount point is the parent directory now; mounting at /var/lib/postgresql/data makes the
+      # entrypoint fail on first start.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reliar -d reliar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Transaction-mode pooler, for reproducing the pooler behaviour of decision #28 by hand.
+  # Startup `options` do not survive a transaction-mode pooler, so search_path must come from
+  # `ALTER ROLE reliar SET search_path = reliar, public`.
+  # This image takes the password from DB_PASSWORD only — it has no *_FILE support — so the value
+  # comes from the environment and is never committed. `scripts/dev-db.sh pooler` exports it from
+  # secrets/postgres_password for you; see deploy/compose/secrets/README.md.
+  # The default is empty rather than a `:?` guard, which compose would evaluate even when this
+  # service's profile is not selected.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    profiles: [pooler]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: reliar
+      DB_NAME: reliar
+      DB_PASSWORD: ${RELIAR_PG_PASSWORD:-}
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "200"
+      DEFAULT_POOL_SIZE: "20"
+    ports: ["127.0.0.1:6432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5432 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+
+volumes:
+  postgres-data:

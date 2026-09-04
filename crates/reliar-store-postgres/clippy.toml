@@ -1,0 +1,8 @@
+# Overrides the workspace `clippy.toml` for this crate only. Must match this crate's own
+# `Cargo.toml` [package].rust-version (ADR 0025: provider crates may carry their driver's MSRV —
+# sqlx 0.9 requires 1.94 here, six releases above the workspace floor of 1.88).
+msrv = "1.94"
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
