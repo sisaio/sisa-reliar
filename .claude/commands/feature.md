@@ -14,7 +14,7 @@ Act as the **Product Owner** (per CLAUDE.md). Run the workflow in `team/feature-
 3. Delegate down the pipeline — the **architect** subagent for design + public-API contract + ADRs,
    then one **engineer** subagent per crate/story in parallel to build + test, then the **reviewer**
    subagent — using the handoff format in `team/communication-protocol.md`. Pull the architect into
-   CI/release/dev-infra only when `.github/`, `docker/`, `scripts/` or release policy change.
+   CI/release/dev-infra only when `.github/`, `deploy/` or release policy change.
 4. Track status; at the end, verify `team/definition-of-done.md` and give an acceptance summary.
 
 Begin now with the brief and the task list.

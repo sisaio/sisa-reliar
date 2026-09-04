@@ -38,7 +38,7 @@ DBA · reviewer = reviewer + QA test-audit. The former `frontend` role was remov
 4. **Delegate.** Invoke subagents with the Agent tool using the handoff format in
    `team/communication-protocol.md`. Typical order: `architect` (design + public-API contract + ADRs)
    → `engineer` ×N in parallel (one per crate/story) → `reviewer` → you accept. Pull the `architect`
-   into CI/release/dev-infra only when `.github/`, `deploy/`, `scripts/` or release policy change.
+   into CI/release/dev-infra only when `.github/`, `deploy/` or release policy change.
 5. **Route the review.** When an engineer returns, send the diff to the `reviewer`. In-scope
    findings go back to the owning engineer; **out-of-scope** findings you capture as new
    `$BACKLOG_DIR/docs/backlog/` cards.

@@ -1,19 +1,17 @@
-//! Applies Reliar's PostgreSQL migrations through the provider's public `migrate()` API.
+//! Applies Reliar's PostgreSQL migrations through this crate's public [`migrate`] API.
 //!
 //! ```text
-//! DATABASE_URL=postgres://user:pw@host/db cargo run -p reliar-migrate
-//! RELIAR_SCHEMA=tenant_a  cargo run -p reliar-migrate      # non-default schema
+//! DATABASE_URL=postgres://user:pw@host/db cargo run -p reliar-store-postgres --example migrate
+//! RELIAR_SCHEMA=tenant_a DATABASE_URL=...  cargo run -p reliar-store-postgres --example migrate
 //! ```
 //!
-//! Two jobs, one binary. In CI it creates the schema before `cargo sqlx prepare --check` and the
+//! Two jobs, one file. In CI it creates the schema before `cargo sqlx prepare --check` and the
 //! provider's integration tests run against the service container — the query macros are verified
 //! against a live database, so that database has to exist first. For operators it is the smallest
-//! possible migration CLI: a host that would rather not call `migrate()` from its own startup path
-//! can run this instead, and a host that runs the published SQL artifact through its own pipeline
+//! possible migration CLI: a host that would rather not call [`migrate`] from its own startup path
+//! can copy this file, and a host that runs the published SQL artifact through its own pipeline
 //! (ADR 0018) needs neither.
 //!
-//! It deliberately contains **no** sqlx query macros of its own, so it builds from the committed
-//! `.sqlx` offline cache and cannot become a second thing to keep in sync.
 
 use std::process::ExitCode;
 
@@ -27,11 +25,11 @@ const SCHEMA_VAR: &str = "RELIAR_SCHEMA";
 async fn main() -> ExitCode {
     match run().await {
         Ok(schema) => {
-            println!("reliar-migrate: schema `{schema}` is up to date");
+            println!("reliar migrate: schema `{schema}` is up to date");
             ExitCode::SUCCESS
         }
         Err(message) => {
-            eprintln!("reliar-migrate: {message}");
+            eprintln!("reliar migrate: {message}");
             ExitCode::FAILURE
         }
     }

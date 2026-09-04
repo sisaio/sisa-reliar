@@ -108,16 +108,16 @@ observations** (from the in-memory publisher in `reliar-outbox`'s test support),
      drops it, then exits with the code — **never `Conclusion::exit()`** (it calls `process::exit`
      and skips destructors). Enable the crate's `watchdog` feature so SIGINT/SIGTERM still remove it.
      `TESTCONTAINERS_COMMAND=keep`, `reusable-containers`/`.with_reuse` are forbidden in CI.
-  3. `scripts/test.sh` ends with a sweep as the *third* line of defence only: `docker ps -aq --filter label=org.testcontainers.managed-by=testcontainers | xargs -r docker rm -f -v`.
+  3. A **manual** sweep, documented in `CONTRIBUTING.md`, is the *third* line of defence only: `docker ps -aq --filter label=org.testcontainers.managed-by=testcontainers --filter name=^reliar- | xargs -r docker rm -f -v`. Both filters: the label alone also matches another project's containers on the same host.
   4. Child processes (`run_scenario_in_child`-style env tests) receive the parent's `DATABASE_URL`, never start their own container; pooler containers are locals in their trial.
-  5. After any local suite run, `docker ps -a` shows no `postgres:18-alpine`/pgbouncer/pgdog leftovers
+  5. After any local suite run, `docker ps -a` shows no `postgres:18-alpine`/`pgdog` leftovers
      and `docker volume ls -q | wc -l` did not grow. Put this check in the card Log when touching the harness.
 - Templates/databases live inside the container and vanish with it; never use a long-lived local DB.
 
 ## CI
 
 `test.yaml` runs a `postgres:18` service container and exports `DATABASE_URL`; the harness then skips
-Docker-in-Docker. Locally with Docker Desktop the same tests spin their own container. Pooler scenarios always start their own PgBouncer/PgDog container (`testcontainers::GenericImage`) pointed at the Postgres under test. Keep the
+Docker-in-Docker. Locally with Docker Desktop the same tests spin their own container. The pooler scenario starts its own **PgDog** container (`testcontainers::GenericImage` + two mounted TOML files, `ghcr.io/pgdogdev/pgdog:v0.1.46`) pointed at the Postgres under test — one pooler, not two (decision #31). It asserts URL-`options` pass-through, the `ALTER ROLE` fallback, and the full enqueue → claim → complete/fail → purge path; "the pooler dropped the options, so construction fails fast" is asserted without any pooler at all. Keep the
 `sqlx prepare --check` job on the same freshly migrated database.
 
 ## Definition of done (real-DB tests)

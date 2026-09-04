@@ -58,8 +58,21 @@ dependency rule (conventions §2) pointing the right way and the MSRV pointing t
    straight back in and the job failed. The job therefore also **fails** when an included member
    depends on an above-floor package without declaring a `rust-version` of its own — such a package
    can neither build on the MSRV toolchain nor be excluded from it, so leaving it undeclared is an
-   error rather than something to work around. Logic in `scripts/msrv-exclusions.py`, so it is
-   testable outside CI.
+   error rather than something to work around.
+
+   *(Amended 2026-09-04, human decision #32.)* That logic lived in `scripts/msrv-exclusions.py`;
+   `scripts/` is gone (ADR 0022) and the logic is now **inline `bash` + `jq` in the `msrv` step**,
+   which removes Python as a build-time dependency of CI. Two properties survived the move
+   verbatim, because both fail *silently*: versions are padded to exactly three components before
+   comparison (so `1.88` and `1.88.0` compare equal — without the padding jq's array comparison
+   reads `1.88.0` as above a `1.88` floor, excludes every member, and leaves the job green having
+   built nothing), and that equality is **asserted in the step** before the exclusion list is
+   computed. The list itself is still computed from `cargo metadata --no-deps`, never hard-coded.
+
+   Alongside it, the package that made this bite twice is gone: `tools/reliar-migrate` declared
+   `rust-version = "1.94"` purely to satisfy the dependent check above, and is now
+   `crates/reliar-store-postgres/examples/migrate.rs` — a target of the crate whose MSRV it
+   already shares, so there is one fewer floor to declare and keep in step.
 
 5. **Raising a provider's MSRV** follows the same rule as the workspace floor (0024): a minor
    release with a `CHANGELOG.md` entry, never a patch. A provider crate's MSRV tracking its driver's

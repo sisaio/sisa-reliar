@@ -32,7 +32,7 @@ Human ──▶ PO ──▶ Architect ──▶ ┌ Engineer (crate A) ┐ ─�
   lease, retry, ordering, duplicate window); give schema direction; set perf budgets; record
   **ADRs**. When CI/release/dev-infra change, do them (skill `ci-release`).
 - **Out:** a design note, the contract (documented stubs in the owning crate or in the ADR),
-  `docs/decisions/NNNN-*.md`, any `.github/`/`docker/`/`scripts/` changes.
+  `docs/decisions/NNNN-*.md`, any `.github/`/`deploy/` changes.
 - **Gate:** contract agreed; engineers can build their crates against it independently.
 
 ## 2. Build — Engineer(s), in parallel per crate

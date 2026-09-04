@@ -1,7 +1,9 @@
 # ADR 0022 — Workspace layout, build profiles, semver policy, and the CI/YAML rules
 
 **Status:** Accepted — 2026-09-04; the `rust-version` clause is superseded by [ADR 0024](0024-msrv-1-88-and-msrv-policy.md);
-the **action-pinning clause is superseded by human decision #30 (2026-09-04)** — see *Action references* below
+the **action-pinning clause is superseded by human decision #30 (2026-09-04)** — see *Action references* below;
+the **`tools/*` workspace member and the `scripts/` helper directory are withdrawn by human
+decision #32 (2026-09-04)** — see *No `scripts/`, no `tools/`* below
 **SRS:** §6, §7, §7.1, §32, §38, §39, §40, §41, §44, §43.B
 **Decisions:** human decisions 6, 8, 20, 21, 22, 23, 30
 
@@ -21,9 +23,10 @@ before the first crate exists and most expensive after 0.1 ships.
 
 **Workspace.**
 
-- Virtual workspace, `resolver = "3"`, `members = ["crates/*", "examples/*", "tools/*", "tests/*"]`.
+- Virtual workspace, `resolver = "3"`, `members = ["crates/*", "examples/*", "tests/*"]`.
   `"tests/*"` is required so `tests/system` is a **real member package** (`Cargo.toml`,
   `publish = false`, tests under `tests/system/tests/`).
+  *(Amended 2026-09-04, decision #32: `"tools/*"` is removed — see below.)*
 - **Benchmarks live in each crate** (`crates/<name>/benches/`, `[[bench]] harness = false`), using
   Cargo's own convention. This supersedes v1.0's top-level `benches/` tree. Bench targets are not
   compiled into the published library, which satisfies the original intent.
@@ -62,7 +65,8 @@ before the first crate exists and most expensive after 0.1 ships.
   transitively. This is the same mechanism, for the same reason, as the `reliar-core` purity gate
   below. `chrono` is the exception and stays a graph-wide `deny`: two datetime stacks in one binary
   is ecosystem hygiene rather than style, and nothing in the graph pulls it today. `anyhow` remains
-  allowed in `examples/` and `tools/`, which the `crates/*`-scoped gate simply does not cover.
+  allowed in `examples/` *(and, until decision #32 removed the directory, `tools/`)*, which the
+  `crates/*`-scoped gate simply does not cover.
 
 **Build profiles.** Declared explicitly in the root `Cargo.toml` rather than inherited: `dev`
 (`opt-level = 0`, dependencies at `2`), `test` (`inherits = "dev"`, `opt-level = 1` — sqlx macros
@@ -85,7 +89,8 @@ host.**
   argument that a tag is mutable. **The human reversed that:** every `uses:` now names the action's
   **latest major version tag** (`actions/checkout@v7`, `github/codeql-action/init@v4`,
   `codecov/codecov-action@v7`, …). `dtolnay/rust-toolchain@stable` / `@master` remain branch refs
-  by upstream design, and `ossf/scorecard-action@v2.4.4` keeps its exact patch tag because upstream
+  **by upstream design — that action publishes no semver tags at all, its branches *are* its
+  released interface**, so there is no version reference to prefer over them; and `ossf/scorecard-action@v2.4.4` keeps its exact patch tag because upstream
   publishes no floating `v2` tag. The reasoning accepted: the workflows become readable and
   maintainable and a Dependabot bump is a one-token diff, at the **known cost of OpenSSF
   Scorecard's `Pinned-Dependencies` check**, which only credits immutable references and will
@@ -107,10 +112,44 @@ host.**
   failure is invisible is worse still. The CI gate whitelists the **exact path**, not the
   extension, so a second `.yml` cannot appear beside it. SRS §40's `.yaml`-only sentence needs the
   matching one-line exception (PO).
+- **No `scripts/`, no `tools/`** *(added 2026-09-04, human decision #32)*. Both directories are
+  removed and neither returns. Three shell wrappers (`test.sh`, `lint.sh`, `release.sh`), a
+  `dev-db.sh`, a Python MSRV helper, an `xtask` package whose only job was to `exec` those scripts,
+  and a `reliar-migrate` package whose only job was to call one public function were **five
+  indirections in front of six commands**, each one a place for the real command and the wrapper to
+  drift, and `xtask`/`reliar-migrate` were additionally workspace members with manifests, lint
+  configuration and — for `reliar-migrate` — a second `rust-version` the MSRV gate had to be taught
+  about (ADR 0025). Instead:
+  - **A repeatable command lives in the workflow that runs it**, and is spelled out for humans in
+    `CONTRIBUTING.md`. What a contributor types is then literally what CI types.
+  - **Logic a workflow needs is inline in the step**, in `bash` + `jq` — the `msrv` job's computed
+    ADR-0025 exclusion list is the largest such block at ~30 lines; the `conventions` job's gates
+    (the `.yml` whitelist, the inline-`#[cfg(test)]` and banned-crate greps, the compose/test image
+    pin equality of decision #31) and the workflows' service probes are the rest. This drops Python as a
+    build-time dependency of CI. The one property whose failure was silent (version padding, so
+    `1.88` and `1.88.0` compare equal — otherwise the job excludes every member and passes having
+    built nothing) keeps its assertion, inline, as the first thing the step does.
+  - **A one-off binary is an `examples/` target of the crate that owns the API it calls.**
+    `crates/reliar-store-postgres/examples/migrate.rs` replaces `tools/reliar-migrate`;
+    `cargo run -p reliar-store-postgres --example migrate` reaches it with no member, no manifest,
+    and no second MSRV, and `cargo check --all-targets` builds it like any other target.
+  The cost, accepted: a contributor copies a longer command line, and a future cross-cutting tool
+  (a release checklist, a codegen step) has to argue for its own home rather than landing in a
+  directory that already exists. `examples/*` remains a member glob; `tools/*` does not.
 - Dev infrastructure lives under `deploy/docker/` (Dockerfiles) and `deploy/compose/`
   (`docker-compose.yaml` + `configs/`, `secrets/`); only `secrets/*.example` is committed. There is
   no top-level `docker/`. The compose stack is for examples and manual exploration — **no test
-  targets it** (ADR 0021).
+  targets it** (ADR 0021). Its optional `pooler` profile runs **PgDog**, the same image and tag the
+  provider's pooler scenario starts (decision #31), with `configs/pgdog.toml` committed
+  credential-free and the one file that carries the upstream password generated by compose from
+  `${RELIAR_PG_PASSWORD}`. Both pins are held equal to the scenario's `const`s by a `conventions`
+  gate rather than by a shared file: Rust needs them as `const`s and compose as `image:`, and an
+  `include_str!` reaching outside the crate directory would not survive `cargo package`.
+  The pgdog service's healthcheck is a **real `select 1` through the pooler**, not `pgdog --version`
+  or `pg_isready -p 6432` — both answer "up" for a PgDog that has *disabled its pool* because
+  `RELIAR_PG_PASSWORD` was empty, which made `up --wait` report a stack that fails on first use
+  (review finding, 2026-09-04). A query is the only probe that covers client auth and the upstream
+  connection together; the container's `PGPASSWORD` is the same secret its `users.toml` already holds.
 - **Licence: MIT only**, one `LICENSE` file, `license = "MIT"` via `[workspace.package]`. The dual
   `MIT OR Apache-2.0` recommendation is withdrawn (decision 6); there are no `LICENSE-MIT` /
   `LICENSE-APACHE` files. Inbound contributions are MIT under a **DCO sign-off, not a CLA**.
@@ -135,8 +174,9 @@ host.**
 
 - Everything in the tree is a workspace member, so `cargo build/clippy/test --workspace` genuinely
   covers it — no silently-unbuilt package. Cargo rejects a `members` glob that matches nothing, so
-  the four globs are enabled one at a time as each directory gains its first package; the target
-  list above is what the root `Cargo.toml` carries once Phase 1 lands.
+  the globs are enabled one at a time as each directory gains its first package; the target list
+  above is what the root `Cargo.toml` carries once Phase 1 lands (`crates/*` and `examples/*`
+  today, `tests/*` when the first system-test package exists).
 - `#[non_exhaustive]` everywhere makes exhaustive matching impossible for downstream users on
   Reliar's enums, and requires builders for construction. That is the deliberate trade for being
   able to add fields for the life of 0.x.
@@ -155,3 +195,6 @@ host.**
 - **Dual MIT/Apache-2.0 licence.** Withdrawn by decision 6: the patent grant and inbound-contribution
   notice are administration this project is not ready for, and the repository already ships MIT.
 - **Allow `.yml`.** Rejected: two spellings means a glob eventually misses a file.
+- **Keep `scripts/` + `xtask` as the one entry point for every command** (the original layout,
+  withdrawn by decision #32). Rejected: a wrapper that only forwards is a second copy of the
+  command that can disagree with CI, and `cargo xtask test` was a third name for `cargo test`.

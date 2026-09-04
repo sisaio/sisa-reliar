@@ -64,11 +64,12 @@ jobs:
         with:
           tool: cargo-llvm-cov
       # Keyed on the **provider crate**, which is what actually has to exist for a migration to
-      # be meaningful. It used to key on `reliar-migrate`, a package that had never been created —
-      # so the probe was permanently false, the migration silently never ran, and the job stayed
-      # green while proving nothing. A skip-guard whose condition can never be true is worse than
-      # no guard: it reports success. `tools/reliar-migrate` now exists and is a workspace member,
-      # so it is not separately probed.
+      # be meaningful — and which now owns the migration entry point itself, as
+      # `crates/reliar-store-postgres/examples/migrate.rs`. It
+      # used to key on a `reliar-migrate` package that had never been created, so the probe was
+      # permanently false, the migration silently never ran, and the job stayed green while
+      # proving nothing. A skip-guard whose condition can never be true is worse than no guard:
+      # it reports success.
       - name: does the Postgres provider exist yet
         id: probe
         run: |
@@ -84,7 +85,7 @@ jobs:
       # cargo llvm-cov starts the test binaries.
       - name: migrate a fresh database
         if: steps.probe.outputs.exists == 'true'
-        run: cargo run -p reliar-migrate
+        run: cargo run -p reliar-store-postgres --example migrate
       - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v7
         with:
@@ -115,10 +116,10 @@ jobs:
       - name: install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      # Keyed on the provider crate alone. The previous `&&` with `reliar-migrate` — a package
-      # that did not exist — made this probe permanently false, so the sqlx-cli install, the
-      # migration and `cargo sqlx prepare --check` were all skipped and the Definition-of-Done
-      # gate went unenforced while the job reported success.
+      # Keyed on the provider crate alone. The previous `&&` with a `reliar-migrate` package that
+      # did not exist made this probe permanently false, so the sqlx-cli install, the migration
+      # and `cargo sqlx prepare --check` were all skipped and the Definition-of-Done gate went
+      # unenforced while the job reported success.
       - name: does the provider crate exist yet
         id: probe
         run: |
@@ -135,12 +136,12 @@ jobs:
         with:
           tool: sqlx-cli
       # Order matters: the schema must exist before any query macro is verified against it.
-      # tools/reliar-migrate calls the provider's public migrate() API and contains no query
+      # The `migrate` example calls the provider's public migrate() API and contains no query
       # macros of its own, so it builds from the committed offline cache (SQLX_OFFLINE is set
       # above) — which is also a smoke test that the cache is current enough to build the provider.
       - name: migrate a fresh database
         if: steps.probe.outputs.exists == 'true'
-        run: cargo run -p reliar-migrate
+        run: cargo run -p reliar-store-postgres --example migrate
       - name: cargo sqlx prepare --check
         if: steps.probe.outputs.exists == 'true'
         working-directory: crates/reliar-store-postgres

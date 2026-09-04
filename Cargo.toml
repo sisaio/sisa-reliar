@@ -2,7 +2,7 @@
 resolver = "3"
 # `tests/*` joins this list when the first system-test package lands; Cargo rejects a glob that
 # matches nothing, so each glob is added with its first member.
-members = ["crates/*", "examples/*", "tools/*"]
+members = ["crates/*", "examples/*"]
 
 [workspace.package]
 edition = "2024"

@@ -31,25 +31,41 @@ MIT licence.
 
 ## Running the checks
 
+The commands below are exactly what CI runs, so what you run
+locally is literally what `ci.yaml` runs:
+
 ```sh
-./scripts/lint.sh                     # fmt, clippy, doc, feature powerset, deny
-./scripts/test.sh                     # cargo test --workspace --all-features
-./scripts/test.sh -p reliar-outbox    # extra arguments go to cargo test
-./scripts/dev-db.sh                   # local Postgres 18 for the examples (`down` to stop)
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+cargo hack check --workspace --feature-powerset --no-dev-deps
+cargo deny check && cargo machete
+cargo test --workspace --all-features          # add -p <crate> for one crate
 ```
+
+Prefix the lint commands with `SQLX_OFFLINE=true` if you have no `DATABASE_URL`; the committed
+`.sqlx/` cache is what CI builds against.
 
 The tests need Docker but no database of your own: provider tests start an ephemeral Postgres
 through testcontainers and create an isolated database per test, because SRS §8.2 forbids testing
 against a shared or long-lived database. `reliar-store-postgres`'s suite starts exactly **one**
-Postgres container for the whole run (plus one `PgBouncer`/`PgDog` each, only inside their own
-scenario) and removes every container and volume by the time the process exits — see
-`docs/guides/postgres.md`'s "Contributing" section if you touch that harness.
-**`TESTCONTAINERS_COMMAND=keep` and container reuse (`.with_reuse(..)`/`reusable-containers`) are
-forbidden in CI** — local debugging aids only, since both defeat the `Drop`-based removal that
-container hygiene depends on. `deploy/compose` exists for the **examples**; running it needs a
-local secret — copy `deploy/compose/secrets/postgres_password.example` to `postgres_password`
-first. `cargo xtask <task>` runs the same scripts. CI runs these checks plus MSRV, coverage,
-CodeQL, Scorecard, and the dependency audit.
+Postgres container for the whole run (plus one `PgDog` pooler, only inside its own scenario) and
+removes every container and volume by the time the process exits — see `docs/guides/postgres.md`'s
+"Contributing" section if you touch that harness. **`TESTCONTAINERS_COMMAND=keep` and container
+reuse (`.with_reuse(..)`/`reusable-containers`) are forbidden in CI** — local debugging aids only,
+since both defeat the `Drop`-based removal that container hygiene depends on. If a run is killed
+hard and leaves something behind, sweep it by hand:
+
+```sh
+docker ps -aq --filter label=org.testcontainers.managed-by=testcontainers --filter name=^reliar- | xargs -r docker rm -f -v
+```
+
+`deploy/compose` exists for the **examples**, never for the tests; running it needs a local secret
+— copy `deploy/compose/secrets/postgres_password.example` to `postgres_password` first, then
+`docker compose -f deploy/compose/docker-compose.yaml up -d --wait postgres` (add
+`--profile pooler`, with `RELIAR_PG_PASSWORD` exported from that same secret, for the `PgDog`
+pooler). Before opening a release PR, `release-plz release --dry-run` shows what would publish.
+CI runs these checks plus MSRV, coverage, CodeQL, Scorecard, and the dependency audit.
 
 ## Pull requests
 

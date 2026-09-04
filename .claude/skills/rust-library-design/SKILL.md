@@ -2,7 +2,7 @@
 name: rust-library-design
 description: >-
   The house pattern for Reliar's Rust library crates - a Cargo virtual workspace (crates/*,
-  examples/*, tools/*) with workspace-level package/deps/lints, the inward crate dependency rule
+  examples/*) with workspace-level package/deps/lints, the inward crate dependency rule
   (reliar-core pure; abstraction crates depend only on core; providers never on each other), small
   capability traits with associated Error types and native async fns in traits returning
   `impl Future + Send` (no async-trait), generics + static dispatch (OutboxDispatcher<S, P>, no
@@ -26,7 +26,7 @@ it explicitly at startup (SRS §3.12 — no DI container). Every decision below 
 ```toml
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/*", "tools/*"]
+members = ["crates/*", "examples/*"]
 
 [workspace.package]
 edition = "2024"
@@ -130,7 +130,7 @@ pub trait Classify { fn kind(&self) -> FailureKind; }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum FailureKind { Transient, Permanent }
 ```
 
-No `thiserror`/`anyhow` in library crates (`anyhow` ok in `examples/`, `tools/`). Errors carry context,
+No `thiserror`/`anyhow` in library crates (`anyhow` ok in `examples/`). Errors carry context,
 never payloads. `#[non_exhaustive]` on every public enum/struct that may grow.
 
 ## The envelope model (SRS §9–§17)

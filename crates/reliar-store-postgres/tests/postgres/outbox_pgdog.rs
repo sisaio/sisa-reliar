@@ -1,17 +1,27 @@
-//! §43.A.35 (`PgDog` half), decision #28 — `PgDog` is the second transaction-mode pooler this
-//! contract must run behind. Unlike `PgBouncer` (`tests/outbox_pgbouncer.rs`), a
-//! `ghcr.io/pgdogdev/pgdog:v0.1.46` pooler was found (empirically, against a live container —
-//! its config schema is not otherwise documented anywhere reachable from this crate) to **pass
-//! the startup `options` parameter through to the upstream server** rather than rejecting or
-//! silently dropping it, so the URL-`options` `search_path` path Reliar's docs recommend as the
-//! primary mechanism works unmodified — the `ALTER ROLE` server-side default (the *only* path
-//! that works behind `PgBouncer`) is exercised too, since decision #28 requires both poolers to
-//! support it as the portable fallback, but it is not the only way to make this pooler work.
+//! §43.A.35, decision #28 as amended by **decision #31** — `PgDog` is *the* transaction-mode
+//! pooler this contract runs behind. (A second pooler image ran the same assertions until
+//! decision #31 retired it: it proved the same property at twice the container cost, and its one
+//! unique case — "the pooler dropped the URL `options`, so construction must fail fast" — needs
+//! no pooler at all to assert, and is covered below and by
+//! `outbox_schema_verification::construction_fails_fast_without_search_path`.)
 //!
-//! `PgDog`'s config is two mounted TOML files (`pgdog.toml`, `users.toml`); this test discovered
-//! their schema by round-tripping deliberately invalid fields through `pgdog configcheck`, which
-//! echoes every field serde expects on an `unknown field` error — there is no bundled example
-//! config in the image to copy from.
+//! This `PgDog` build was found empirically — against a live container, since its config schema
+//! is not documented anywhere reachable from this crate — to **pass the startup `options`
+//! parameter through to the upstream server** rather than rejecting or silently dropping it, so
+//! the URL-`options` `search_path` path Reliar's docs recommend as the primary mechanism works
+//! unmodified. The `ALTER ROLE` server-side default is exercised too, since decision #28 requires
+//! it as the portable fallback for any pooler that drops those options.
+//!
+//! What the scenario asserts, in order: URL-`options` pass-through; fail-fast with neither
+//! options nor a role default; the `ALTER ROLE` fallback; then the full store path through the
+//! pooler — transactional `enqueue`, concurrent `SKIP LOCKED` `acquire`, `complete`, `fail`
+//! (retry) and reclaim, `extend_lease`/`release`, and `purge`.
+//!
+//! `PgDog` is configured by two mounted TOML files, written below in the same credential-free
+//! `[[databases]]` shape as `deploy/compose/configs/pgdog.toml` — the upstream password lives
+//! only in `[[users]]`. The image bundles no example config, so the schema was recovered by
+//! round-tripping deliberately invalid fields through `pgdog configcheck`, which echoes every
+//! field serde expects.
 
 use std::io::Write as _;
 use std::time::Duration;
@@ -30,13 +40,14 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{GenericImage, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 
+// Equal to `deploy/compose/docker-compose.yaml`'s pin by decision #31, enforced by ci.yaml's
+// "compose and the provider tests pin the same images" step — bump both together.
 const PGDOG_IMAGE: &str = "ghcr.io/pgdogdev/pgdog";
 const PGDOG_TAG: &str = "v0.1.46";
 
 /// Writes `pgdog.toml` + `users.toml` into a fresh directory under `std::env::temp_dir()` and
 /// returns the directory. `pg_host` is the Postgres container's network alias — `PgDog` dials it
-/// directly by container name over the shared Docker network, the same way the `PgBouncer` test
-/// does.
+/// directly by container name over the shared Docker network.
 fn write_pgdog_config(pg_host: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("reliar-pgdog-{}", uuid::Uuid::now_v7().simple()));
     std::fs::create_dir_all(&dir).expect("create pgdog config dir");
@@ -53,7 +64,6 @@ host = "{pg_host}"
 port = 5432
 database_name = "postgres"
 user = "postgres"
-password = "postgres"
 "#
     );
     let users_toml = r#"[[users]]
@@ -81,8 +91,8 @@ async fn pgdog_pooler_passes_options_through_and_behaves_like_direct() {
     let pg_name = format!("reliar-pg-{}", uuid::Uuid::now_v7().simple());
 
     // `reliar-` name prefix + `reliar.test=true` label on every container this scenario starts
-    // (review 4 major 3, RELIAR-27): lets `scripts/test.sh`'s sweep key on both, so it only ever
-    // touches this crate's own leftovers.
+    // (review 4 major 3, RELIAR-27): lets the manual sweep documented in `CONTRIBUTING.md` key on
+    // both, so it only ever touches this crate's own leftovers.
     let pg = Postgres::default()
         .with_tag("18-alpine")
         .with_container_name(&pg_name)
@@ -94,8 +104,9 @@ async fn pgdog_pooler_passes_options_through_and_behaves_like_direct() {
     let pg_direct_port = pg.get_host_port_ipv4(5432).await.expect("postgres port");
     let direct_url = format!("postgres://postgres:postgres@127.0.0.1:{pg_direct_port}/postgres");
 
-    // DDL runs direct, same rationale as the PgBouncer test: `migrate()` manages its own
-    // connection and a transaction-mode pooler is not the place for a migrator's advisory lock.
+    // DDL runs direct: `migrate()` manages its own connection and holds a session-level advisory
+    // lock on it, and a transaction-mode pooler can hand that session's statements to different
+    // server connections mid-migration (ADR 0018).
     let direct_pool = PgPool::connect(&direct_url).await.expect("connect direct");
     reliar_store_postgres::migrate(
         &direct_pool,
@@ -140,9 +151,9 @@ async fn pgdog_pooler_passes_options_through_and_behaves_like_direct() {
     let options_pool = PgPool::connect_with(options_url)
         .await
         .expect("connect through pgdog with URL options");
-    // The documented finding: unlike `PgBouncer` (which rejects the startup `options` parameter
-    // outright, `08P01`), this `PgDog` build passes it through to the upstream server, so
-    // construction succeeds without any `ALTER ROLE` at all.
+    // The documented finding: this `PgDog` build passes the startup `options` parameter through
+    // to the upstream server rather than rejecting it (a pooler that refuses an unrecognised
+    // startup parameter answers `08P01`), so construction succeeds without `ALTER ROLE` at all.
     PostgresOutboxStore::new(options_pool)
         .await
         .expect("PgDog passes URL options through, so search_path resolves without ALTER ROLE");
@@ -173,7 +184,8 @@ async fn pgdog_pooler_passes_options_through_and_behaves_like_direct() {
         .expect("alter role");
 
     // A fresh `PgDog` instance so every server connection it opens authenticates *after* the
-    // role default is set — the same pooled-connection-reuse hazard the PgBouncer test avoids.
+    // role default is set. A reused server connection authenticated *before* the `ALTER ROLE`
+    // would still carry the old `search_path`, which is the ambiguity a fresh instance removes.
     let pgdog_after = GenericImage::new(PGDOG_IMAGE, PGDOG_TAG)
         .with_exposed_port(6432.tcp())
         .with_wait_for(WaitFor::message_on_stderr("PgDog listening on"))

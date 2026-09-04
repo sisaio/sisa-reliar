@@ -29,7 +29,7 @@ SRS §20–§26 and §35.
   default `reliar`) resolved through **`search_path`**. The **host** puts the schema **first** in its
   DB connection URL — `postgres://…/app?options=-c%20search_path%3Dreliar,public` — so the caller's
   transaction used by `enqueue` resolves `outbox` with no extra statements. **DevOps note for poolers**
-  (PgBouncer/PgDog in transaction mode may drop startup `options`): `ALTER ROLE app SET search_path =
+  (any transaction-mode pooler that drops startup `options`): `ALTER ROLE app SET search_path =
   reliar, public` instead. Reliar-owned pools set it themselves
   (`PgConnectOptions::options([("search_path", "reliar,public")])`), and `PostgresOutboxStore::new`
   **verifies at startup** that `to_regclass('outbox')` resolves to the configured schema (fail fast;

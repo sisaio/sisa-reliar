@@ -147,6 +147,29 @@ published; this file covers the workspace as a whole.
   outranks the MSRV floor. See [ADR 0024](docs/decisions/0024-msrv-1-88-and-msrv-policy.md), which
   also records the policy for future advisory-versus-MSRV conflicts.
 
+### Removed
+
+- **`scripts/` and `tools/` are gone** (human decision #32,
+  [ADR 0022](docs/decisions/0022-workspace-ci-and-yaml-policy.md)). `scripts/{test,lint,release,dev-db}.sh`,
+  `scripts/msrv-exclusions.py`, `tools/xtask` (and its `cargo xtask` alias) and
+  `tools/reliar-migrate` were five indirections in front of six commands. The commands are now
+  spelled out in `CONTRIBUTING.md` and are literally what CI runs; the `msrv` job's ADR-0025
+  exclusion list is inline `bash` + `jq` (Python is no longer a CI dependency); and the migration
+  CLI is now **`cargo run -p reliar-store-postgres --example migrate`**
+  (`crates/reliar-store-postgres/examples/migrate.rs`), which needs neither a manifest nor a
+  second MSRV. Root `members` is `["crates/*", "examples/*"]`.
+- The second pooler integration scenario (`tests/postgres/outbox_pgbouncer.rs`). **PgDog is the
+  single transaction-mode pooler substrate** (human decision #31, amending decision #28 and
+  [ADR 0021](docs/decisions/0021-testcontainers-and-pooler-test-substrate.md)): two poolers proved
+  the same property at twice the container cost, and the one behaviour the removed scenario
+  covered — a pooler that drops the URL `options` must make construction fail fast — needs no
+  pooler at all and is asserted by
+  `outbox_schema_verification::construction_fails_fast_without_search_path` and by a bare
+  no-`options` connection inside the PgDog scenario. `deploy/compose`'s `pooler` profile now runs
+  the same PgDog image and tag, so a by-hand reproduction matches CI. The docs name no pooler
+  brand as "the one that drops startup options" — whether yours does is a property of its build
+  and configuration, so verify it.
+
 ### Security
 
 - `time` floored at `0.3.47` in `[workspace.dependencies]`, patching **RUSTSEC-2026-0009** /

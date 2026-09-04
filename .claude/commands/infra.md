@@ -9,5 +9,5 @@ $ARGUMENTS
 Follow the `ci-release` skill: `.github/workflows/{ci,test,security,codeql,scorecard,release}.yaml` (+ `dependabot.yaml`; always `.yaml`) split by
 responsibility, `rust-toolchain.toml` + MSRV, `deny.toml`/`clippy.toml`/`rustfmt.toml`, the root
 virtual-workspace `Cargo.toml` (workspace package/deps/lints), `deploy/compose/docker-compose.yaml` for local
-Postgres (later NATS), `scripts/{test,lint,release}.sh`, `cargo sqlx prepare --check`, and the
+Postgres (later NATS; pooler profile = PgDog), `cargo sqlx prepare --check`, and the
 release/semver policy. Summarize what changed and how to run it locally.

@@ -11,7 +11,12 @@ cp postgres_password.example postgres_password
 `docker-compose.yaml` mounts these as Docker secrets (`/run/secrets/<name>`), which is why
 `configs/postgres.env` sets `POSTGRES_PASSWORD_FILE` rather than a literal password.
 
-The `pgbouncer` service (profile `pooler`) is the exception: that image reads `DB_PASSWORD` from
-the environment and supports no `*_FILE` variant. `scripts/dev-db.sh pooler` reads
-`postgres_password` and passes it through that one process's environment, so the value still never
-reaches a committed file.
+The `pgdog` service (profile `pooler`) is the exception: PgDog needs the upstream password inside
+its own `users.toml`, and supports no `*_FILE` variant for it. `configs/pgdog.toml` therefore
+carries no credential at all, and compose generates `users.toml` from `${RELIAR_PG_PASSWORD}` —
+export it from this same secret for the one command, so the value never reaches a committed file:
+
+```sh
+RELIAR_PG_PASSWORD=$(cat postgres_password) \
+  docker compose -f ../docker-compose.yaml --profile pooler up -d --wait
+```

@@ -46,13 +46,14 @@ configuration error, never a silent no-op.
 Requires the toolchain pinned in `rust-toolchain.toml` and Docker for the integration tests.
 
 ```sh
-./scripts/lint.sh     # fmt, clippy, doc, feature powerset, cargo-deny
-./scripts/test.sh     # the whole suite; integration tests start their own Postgres container
-./scripts/dev-db.sh   # local Postgres for the examples (not used by the tests)
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features   # integration tests start their own Postgres container
 ```
 
-See `CONTRIBUTING.md` for the house rules, the SRS in the sibling [sisa-reliar-backlog](https://github.com/sisaio/sisa-reliar-backlog) repo for the architecture baseline, and
-`docs/decisions/` for the ADRs.
+See `CONTRIBUTING.md` for the full gate list, the compose stack for the examples, the house
+rules; the SRS in the sibling [sisa-reliar-backlog](https://github.com/sisaio/sisa-reliar-backlog)
+repo for the architecture baseline; and `docs/decisions/` for the ADRs.
 
 ## Licence
 

@@ -20,12 +20,18 @@ statement is a static, unqualified literal; the schema is resolved at *connectio
 postgres://user:pw@host/app?options=-c%20search_path%3Dreliar,public
 ```
 
-**Behind a transaction-mode pooler (PgBouncer, PgDog)** that drops startup `options`, set a
-server-side default instead — every pooler mode honours this:
+**Behind a transaction-mode pooler that drops startup `options`**, set a server-side default
+instead — every pooler mode honours this, which is why it is the portable mechanism:
 
 ```sql
 ALTER ROLE app SET search_path = reliar, public;
 ```
+
+Whether your pooler drops them is a property of the build and the configuration, so verify rather
+than assume. **`PgDog`** (`ghcr.io/pgdogdev/pgdog:v0.1.46`) — the pooler the provider suite runs
+behind, and the `pooler` profile in `deploy/compose/docker-compose.yaml` — was found to pass the
+startup `options` *through* to the upstream server, so the URL form above works unmodified behind
+it; other poolers reject the parameter outright (`08P01`) and need the `ALTER ROLE` above.
 
 **Warning: putting `reliar` first changes where *your own* unqualified DDL/DML lands, on any
 connection that shares the same `search_path`.** `CREATE TABLE orders (…)` (or a plain `INSERT
@@ -66,23 +72,23 @@ does not depend on the caller's `search_path` and is safe under concurrent calle
 Internally, `migrate()` opens its own **direct** connection from the pool's connect options
 (never a connection borrowed from the pool itself) and serializes concurrent callers with a
 **session-level** advisory lock held on that connection for the duration of the migration. Point
-it at a direct or session-mode endpoint — never a transaction-mode pooler port (e.g. `PgBouncer`'s
-transaction-mode listener) — since a transaction-mode pooler can hand that session's statements to
-different server connections mid-migration, breaking both the advisory lock and the connection's
-own `search_path`.
+it at a direct or session-mode endpoint — never a transaction-mode pooler's listener — since a
+transaction-mode pooler can hand that session's statements to different server connections
+mid-migration, breaking both the advisory lock and the connection's own `search_path`.
 
 There is also a small CLI for the third case — a host that wants neither an in-process
 `migrate()` call nor a DBA pipeline:
 
 ```bash
-DATABASE_URL=postgres://user:pw@host/db cargo run -p reliar-migrate
-RELIAR_SCHEMA=tenant_a DATABASE_URL=... cargo run -p reliar-migrate   # non-default schema
+DATABASE_URL=postgres://user:pw@host/db cargo run -p reliar-store-postgres --example migrate
+RELIAR_SCHEMA=tenant_a DATABASE_URL=... cargo run -p reliar-store-postgres --example migrate
 ```
 
-`tools/reliar-migrate` is a `publish = false` workspace binary that does nothing but call
-`migrate()` with `MigrateOptions::default()`. It is the same code path as the snippet above, so it
-cannot drift from it, and it is what CI runs to create the schema before the provider's tests and
-`cargo sqlx prepare --check`.
+`crates/reliar-store-postgres/examples/migrate.rs` does nothing but call `migrate()` with
+`MigrateOptions::default()` (plus `RELIAR_SCHEMA` for a non-default schema). It is the same code
+path as the snippet above, so it cannot drift from it; it is what CI runs to create the schema
+before the provider's tests and `cargo sqlx prepare --check`; and, being an example target of the
+crate, it carries no second manifest and no second MSRV. Copy it if you want your own binary.
 
 Every release also publishes the same `.sql` files as a **standalone artifact**
 (`reliar-store-postgres-migrations-<version>.tar.gz`, with a `SHA256SUMS` manifest) for a team that
@@ -161,7 +167,7 @@ the dispatcher retries rather than dead-lettering a row over a slow statement.
 `cargo test -p reliar-store-postgres --all-features` starts **exactly one** Postgres container
 for the whole run (`tests/postgres/main.rs`, a `harness = false` binary built on `libtest-mimic`:
 `main` owns the container as a local, runs every scenario, then drops it before exiting) — plus,
-only inside their own scenario, one `PgBouncer` and one `PgDog` container each. Every container
+only inside its own scenario, one `PgDog` container (decision #31). Every container
 and its volumes are removed by the time the process exits, on success, on a panicking test, and on
 `SIGINT`/`SIGTERM`/`SIGQUIT` (RELIAR-27). Three layers make that true, in order:
 
@@ -172,10 +178,15 @@ and its volumes are removed by the time the process exits, on success, on a pani
 2. **The `watchdog` dev-dependency feature.** Removes registered containers on
    `SIGINT`/`SIGTERM`/`SIGQUIT` — the one case `Drop` alone cannot cover, since a killed process
    runs no destructors either.
-3. **`scripts/test.sh`'s label-scoped sweep**, in a `trap … EXIT` so it runs regardless of the
-   suite's outcome: `docker ps -aq --filter label=org.testcontainers.managed-by=testcontainers |
-   xargs -r docker rm -f -v`. This is the *third* line of defence, never the first — a sweep that
-   is relied on hides a harness bug.
+3. **A manual, label-scoped sweep** for the rare leftover, as the *third* line of defence and
+   never the first — a sweep that is relied on hides a harness bug:
+
+   ```sh
+   docker ps -aq --filter label=org.testcontainers.managed-by=testcontainers --filter name=^reliar- | xargs -r docker rm -f -v
+   ```
+
+   Both filters, not just the label: the label alone would also match another project's
+   testcontainers-managed containers on the same Docker host.
 
 **`TESTCONTAINERS_COMMAND=keep` and the `reusable-containers` feature / `.with_reuse(..)` are
 forbidden in CI**, and are a local debugging aid only. Both defeat `Drop`-based removal, which is

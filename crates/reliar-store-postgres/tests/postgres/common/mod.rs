@@ -122,7 +122,7 @@ pub(crate) async fn start_shared_container() -> Option<ContainerAsync<Postgres>>
     }
     // `reliar-` name prefix + `reliar.test=true` label (review 4 major 3, RELIAR-27): the
     // built-in `org.testcontainers.managed-by=testcontainers` label alone is too broad for
-    // `scripts/test.sh`'s sweep to key on — it would also match a different project's
+    // the manual sweep in `CONTRIBUTING.md` to key on — it would also match a different project's
     // testcontainers-managed containers on the same Docker host. Both together are what let the
     // sweep (and a human skimming `docker ps`) tell "this crate's leftovers" apart from
     // anything else testcontainers-rs is managing.

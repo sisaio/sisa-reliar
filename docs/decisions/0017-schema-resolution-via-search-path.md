@@ -29,10 +29,15 @@ reopened twice — is the schema name **compiled in** (fully qualified `FROM rel
 - **The host puts Reliar's schema first on `search_path`** — normally in the connection URL
   (`?options=-c%20search_path%3Dreliar,public`). **First**, so an unqualified name can never be
   shadowed by a host table of the same name in `public`.
-- **Pooler fallback is documented, not incidental.** PgBouncer and PgDog in transaction mode may
-  not pass startup `options` through, so the URL parameter never reaches the server. The supported
+- **Pooler fallback is documented, not incidental.** A transaction-mode pooler may not pass
+  startup `options` through, so the URL parameter never reaches the server. The supported
   alternative is a server-side default — `ALTER ROLE <app> SET search_path = reliar, public` —
   which every pooler mode honours because the server applies it at authentication.
+  *(Amended 2026-09-04, decision #31.)* This clause originally named PgBouncer and PgDog. Whether
+  a given pooler drops the options is a property of the build and configuration, not of the
+  category: **PgDog** — now the single pooler substrate, below — was found empirically to pass
+  them *through*. The documentation therefore tells a host to verify its own pooler rather than
+  assume, and keeps `ALTER ROLE` as the portable answer.
 - **Reliar sets `search_path` on any pool it owns** (`PgConnectOptions::options`) — the migration
   path, examples, tests — so those never depend on the host's URL.
 - **Startup verification, fail fast.** `PostgresOutboxStore::new` verifies **once at construction**
@@ -59,7 +64,8 @@ reopened twice — is the schema name **compiled in** (fully qualified `FROM rel
   construct. That is the point — a fail-fast construction error beats reading a host's unrelated
   `outbox` table. The error text carries the remedy.
 - Because table resolution now depends on `search_path`, **the provider suite must test through a
-  pooler** (decision 28): PgBouncer transaction mode and PgDog as testcontainers generic images,
+  pooler** (decision 28, narrowed to **PgDog alone** by decision #31 — see ADR 0021), as a
+  testcontainers generic image,
   asserting `ALTER ROLE` resolution, the full enqueue → claim → publish → purge path, concurrent
   `SKIP LOCKED` claims and lease updates, graceful `LISTEN/NOTIFY` degradation, and the fail-fast
   error where the pooler drops URL `options` (§43.A.35, ADR 0021).

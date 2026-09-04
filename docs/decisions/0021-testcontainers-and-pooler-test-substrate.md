@@ -37,13 +37,23 @@ ADR 0017 adds a second reason to be strict: table resolution now depends on `sea
   `tokio::time::advance`; database timing uses **SQL time-travel**
   (`UPDATE … SET locked_until = now() - interval …`). Assertions are on **database state plus
   recorded publisher observations**, not just `Ok`.
-- **Pooler scenarios are part of the suite** (decision 28). **PgBouncer** (transaction mode) and
-  **PgDog**, each a testcontainers *generic image* in front of the Postgres container, assert:
+- **A pooler scenario is part of the suite** (decision 28). *(Amended 2026-09-04, decision #31:
+  the substrate is **PgDog alone**. Two poolers proved the same property at twice the container
+  cost; the one behaviour the second covered — "the pooler dropped the URL `options`, so
+  construction must fail fast" — needs no pooler at all to assert, and is covered by
+  `outbox_schema_verification::construction_fails_fast_without_search_path` plus a bare
+  no-`options` connection inside the PgDog scenario itself. The `deploy/compose` `pooler` profile
+  runs the same PgDog image and tag, so a by-hand reproduction matches CI.)*
+  **PgDog** (`ghcr.io/pgdogdev/pgdog:v0.1.46`), a testcontainers *generic image* with its two
+  TOML config files mounted, in front of the Postgres container, asserts:
   `ALTER ROLE … SET search_path` resolves through the pooler; the full enqueue → claim → publish →
   purge path works over it; `FOR UPDATE SKIP LOCKED` claims and lease updates behave (one statement,
-  no session state); `LISTEN/NOTIFY` degrades to polling rather than failing when enabled; and where
+  no session state); and where
   the pooler drops the URL `options`, `PostgresOutboxStore::new` **fails fast** with the documented
-  error rather than silently reading a table in the wrong schema.
+  error rather than silently reading a table in the wrong schema. *(Forward-looking: this ADR
+  also listed "`LISTEN/NOTIFY` degrades to polling rather than failing behind the pooler". Phase 1
+  ships no notify path, so there is nothing to assert yet — the assertion is owed by the release
+  that adds `LISTEN/NOTIFY` wake-up, 0.2 / SRS §26.)*
 - **Shared fakes ship from `reliar-outbox` behind a `test-support` feature** — `InMemoryOutboxStore`,
   `RecordingPublisher`, `ScriptedPublisher`, a controllable clock — so provider crates, examples and
   `tests/system` reuse one set instead of writing three.

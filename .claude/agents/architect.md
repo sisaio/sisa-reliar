@@ -29,7 +29,7 @@ Optimize for correctness of the guarantees, API stability, simplicity, and chang
 - **Performance budget + security design** (`team/performance-and-security.md`).
 - **Platform**: `.github/workflows/{ci,test,security,codeql,scorecard,release}.yaml` + `dependabot.yaml` (always `.yaml`), `deny.toml`, `clippy.toml`,
   `rustfmt.toml`, `rust-toolchain.toml`, root `Cargo.toml` (workspace package/deps/lints), MSRV,
-  `cargo semver-checks`, release flow, `deploy/compose/docker-compose.yaml`, `scripts/`.
+  `cargo semver-checks`, release flow, `deploy/compose/docker-compose.yaml`; CI logic lives inline in the workflows.
 
 ## How you work
 1. Read the PO's stories and the SRS sections they cite. Name the crates, traits, and records in play.

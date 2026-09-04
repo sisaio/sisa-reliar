@@ -52,7 +52,6 @@ mod outbox_fail_retry_dead;
 mod outbox_lease_management;
 mod outbox_lease_recovery;
 mod outbox_non_default_schema;
-mod outbox_pgbouncer;
 mod outbox_pgdog;
 mod outbox_poisoned_row;
 mod outbox_purge;
@@ -99,7 +98,6 @@ fn main() -> ExitCode {
     trials.extend(outbox_lease_management::trials(rt));
     trials.extend(outbox_lease_recovery::trials(rt));
     trials.extend(outbox_non_default_schema::trials(rt));
-    trials.extend(outbox_pgbouncer::trials(rt));
     trials.extend(outbox_pgdog::trials(rt));
     trials.extend(outbox_poisoned_row::trials(rt));
     trials.extend(outbox_purge::trials(rt));

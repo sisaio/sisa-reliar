@@ -25,8 +25,8 @@ receiving agent reads the file itself, so delegation stays small and token cost 
 | Role | Writes (hand off by path) | Repo scope (edits) |
 |---|---|---|
 | PO | `$BACKLOG_DIR/docs/stories/`, `$BACKLOG_DIR/docs/backlog/*.md` cards, the brief, `$BACKLOG_DIR/docs/analysis/`, `$BACKLOG_DIR/docs/srs.md` (only with the human) | `../sisa-reliar-backlog/docs/`, `docs/guides/` |
-| Architect | `docs/decisions/` ADRs, `docs/architecture/`, the **public API contract** (trait/type signatures written into the owning crate's `src/` as documented stubs or into the ADR), `.github/`, `docker/`, `scripts/`, root `Cargo.toml`/`deny.toml`/`clippy.toml`/`rustfmt.toml`, `CHANGELOG.md` release notes | `docs/`, `.github/`, `docker/`, `scripts/`, root config (reads all crates) |
-| Engineer | crate code, **schema + migrations** in provider crates, `.sqlx/`, tests, benches, examples, crate READMEs, `docs/guides/` | `crates/<assigned>/`, `examples/`, `benches/`, `tools/`, `docs/guides/`, `$BACKLOG_DIR/docs/backlog/` (own card) |
+| Architect | `docs/decisions/` ADRs, `docs/architecture/`, the **public API contract** (trait/type signatures written into the owning crate's `src/` as documented stubs or into the ADR), `.github/`, `deploy/`, root `Cargo.toml`/`deny.toml`/`clippy.toml`/`rustfmt.toml`, `CHANGELOG.md` release notes | `docs/`, `.github/`, `deploy/`, root config (reads all crates) |
+| Engineer | crate code, **schema + migrations** in provider crates, `.sqlx/`, tests, benches, examples, crate READMEs, `docs/guides/` | `crates/<assigned>/`, `examples/`, `benches/`, `docs/guides/`, `$BACKLOG_DIR/docs/backlog/` (own card) |
 | Reviewer | the review findings | **read-only** — the diff |
 
 Every role may edit **its own card in `$BACKLOG_DIR/docs/backlog/`** (status/log). Read only what your task

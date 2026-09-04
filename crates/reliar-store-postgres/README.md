@@ -49,8 +49,9 @@ statement is a static, unqualified literal — the schema is resolved at connect
    postgres://user:pw@host/app?options=-c%20search_path%3Dreliar,public
    ```
 
-2. **Behind a transaction-mode pooler** (PgBouncer, PgDog) that may drop startup `options`, set a
-   server-side default instead, which every pooler mode honours:
+2. **Behind a transaction-mode pooler** — any pooler that drops startup `options` needs a
+   server-side default instead, which every pooler mode honours (verify which yours does:
+   `PgDog`, the pooler the suite tests against, passes them through):
 
    ```sql
    ALTER ROLE app SET search_path = reliar, public;

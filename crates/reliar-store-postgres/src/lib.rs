@@ -29,14 +29,15 @@
 //! connection time through `search_path`, never compiled in (ADR 0017).
 //!
 //! - **The host puts `reliar` first** on the connection URL: `?options=-c%20search_path%3Dreliar,public`.
-//! - **Behind a transaction-mode pooler that drops startup `options`** (`PgBouncer` rejects the
+//! - **Behind a transaction-mode pooler that drops startup `options`** (some reject the
 //!   parameter outright with `08P01`), use a server-side default instead:
 //!   `ALTER ROLE <app> SET search_path = reliar, public`. This is the portable mechanism —
 //!   verify it against your own pooler build/version rather than assuming: `PgDog`
-//!   (`ghcr.io/pgdogdev/pgdog:v0.1.46`, tested here) was found to **pass the `options` parameter
-//!   through** to the upstream server instead of dropping it, so the URL-`options` path above
-//!   works unmodified behind it too, with no `ALTER ROLE` required — but a different pooler, or
-//!   a different `PgDog` configuration, could behave either way (§43.A.35).
+//!   (`ghcr.io/pgdogdev/pgdog:v0.1.46`, the pooler this crate's suite runs behind) was found to
+//!   **pass the `options` parameter through** to the upstream server instead of dropping it, so
+//!   the URL-`options` path above works unmodified behind it too, with no `ALTER ROLE` required
+//!   — but a different pooler, or a different `PgDog` configuration, could behave either way
+//!   (§43.A.35).
 //! - [`PostgresOutboxStore::connect`]/[`PostgresOutboxStore::new`] verify **once at
 //!   construction** that the unqualified name `outbox` resolves to the configured schema, and
 //!   fail fast — naming the configured schema, the observed `search_path`, and the `ALTER ROLE`

@@ -33,10 +33,12 @@ in-house DI container, runtime plugin loading…) without an ADR.
 
 ## 2. Workspace & crate layout (SRS §6–§8)
 
-The root is a **Cargo virtual workspace** — no root `src/`. Members: `crates/*`, `examples/*`,
-`tools/*` (and `benches/*` if benches are packages). Shared version/edition/license/MSRV via
+The root is a **Cargo virtual workspace** — no root `src/`. Members: `crates/*`, `examples/*`
+(plus `tests/*` when the first system-test package lands). A one-off binary is an `examples/` target of the crate that
+owns the API it calls, and a repeatable command lives in the workflow that runs it, spelled out in
+`CONTRIBUTING.md` for humans. Shared version/edition/license/MSRV via
 `[workspace.package]`; shared dependency versions via `[workspace.dependencies]`; shared lints via
-`[workspace.lints]`. Examples and tools set `publish = false`.
+`[workspace.lints]`. Examples set `publish = false`.
 
 ```
 crates/<crate>/
@@ -81,7 +83,7 @@ Create a crate **only when its implementation begins** (SRS §6).
 
 - **Hand-rolled, transport-free enums** per crate/module with manual `Display`,
   `std::error::Error` (`source()`), and targeted `From` impls. **No `thiserror`/`anyhow`** in public
-  APIs (`anyhow` is acceptable in `examples/` and `tools/` only).
+  APIs (`anyhow` is acceptable in `examples/` only).
 - Publication failures carry a **classification**: the dispatcher requires `P::Error` to expose
   `Transient | Permanent` (a small `FailureKind`/`Classify` trait in `reliar-outbox`); transient →
   retry with backoff, permanent or attempts exhausted → **dead** (`dead_at`, `last_error`).
@@ -118,8 +120,9 @@ Create a crate **only when its implementation begins** (SRS §6).
 - **Identifiers:** unprefixed, unqualified names (`outbox`) in a **configurable schema via
   `search_path`, default `reliar`** — sqlx macros need static SQL, so the schema is resolved by the
   connection: the host puts `reliar` first in its DB URL `options` (or `ALTER ROLE … SET search_path`
-  behind a pooler); Reliar sets it on its own pool and verifies at startup. Pooler scenarios
-  (PgBouncer, PgDog) are part of the integration suite.
+  behind a pooler); Reliar sets it on its own pool and verifies at startup. The pooler scenario
+  (**PgDog**, decision #31) is part of the integration suite; any transaction-mode pooler that
+  drops startup options needs the `ALTER ROLE` path instead of URL `options`.
   Table names are not configurable. Every PK/FK/check is named `pk_`/`fk_`/`ck_`; **every index is `ix_`**.
   **PostgreSQL 18+**; ids are UUID v7 (`DEFAULT uuidv7()`, also generated client-side).
 - **Settings:** every feature exposes a `*Settings` struct — `Default` + builder, `serde` behind a

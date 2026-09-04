@@ -9,9 +9,9 @@
 //! curl -X POST localhost:3000/orders -H 'content-type: application/json' -d '{"order_id":1}'
 //! ```
 //!
-//! See `docs/guides/postgres.md` for `search_path` setup behind a transaction-mode pooler
-//! (`PgBouncer`/`PgDog`), where the `?options=` query parameter is dropped by the pooler and an
-//! `ALTER ROLE <app> SET search_path = reliar, public;` is used instead.
+//! See `docs/guides/postgres.md` for `search_path` setup behind a transaction-mode pooler: any
+//! pooler that drops the `?options=` query parameter needs an
+//! `ALTER ROLE <app> SET search_path = reliar, public;` instead.
 
 use std::net::SocketAddr;
 

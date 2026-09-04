@@ -53,7 +53,7 @@ jobs:
       # engineering-conventions §3/§4 + ADR 0022. These are *house style* rules about our own
       # source, so they are enforced per-manifest here rather than as a `cargo deny` ban: deny's
       # bans are graph-wide, and sqlx-core legitimately depends on thiserror. Scoped to crates/*
-      # on purpose — anyhow is allowed in examples/ and tools/ (ADR 0022, deny.toml).
+      # on purpose — anyhow is allowed in examples/ (ADR 0022, deny.toml).
       - name: no house-banned crates in library manifests
         run: |
           set -euo pipefail
@@ -63,6 +63,45 @@ jobs:
             echo "::error::a library crate declares a banned dependency; see engineering-conventions §3/§4"
             exit 1
           fi
+      # Decision #31: the compose `pooler` profile runs the same PgDog the provider's pooler
+      # scenario runs, and the provider tests the same PostgreSQL major the compose stack runs —
+      # reproducing a CI failure by hand is only worth something if the substrate matches. Rust
+      # needs the image and tag as `const`s and compose needs them in `image:`; neither file can
+      # read the other (an `include_str!` reaching outside the crate directory would not survive
+      # `cargo package`), so the pins stay literal in both and this step is what keeps them equal.
+      - name: compose and the provider tests pin the same images
+        run: |
+          set -euo pipefail
+          compose=deploy/compose/docker-compose.yaml
+          scenario=crates/reliar-store-postgres/tests/postgres/outbox_pgdog.rs
+          need() { [ -n "$1" ] || { echo "::error::$2"; exit 1; }; }
+
+          compose_pgdog=$(sed -n 's|^[[:space:]]*image: \(ghcr\.io/pgdogdev/pgdog:.*\)$|\1|p' "$compose")
+          test_image=$(sed -n 's|^const PGDOG_IMAGE: &str = "\(.*\)";$|\1|p' "$scenario")
+          test_tag=$(sed -n 's|^const PGDOG_TAG: &str = "\(.*\)";$|\1|p' "$scenario")
+          need "$compose_pgdog" "no ghcr.io/pgdogdev/pgdog image found in $compose"
+          need "$test_image" "no PGDOG_IMAGE const found in $scenario"
+          need "$test_tag" "no PGDOG_TAG const found in $scenario"
+          if [ "$compose_pgdog" != "$test_image:$test_tag" ]; then
+            echo "::error::PgDog pin drifted: $compose has '$compose_pgdog', $scenario has '$test_image:$test_tag'"
+            exit 1
+          fi
+
+          compose_pg=$(sed -n 's|^[[:space:]]*image: postgres:\(.*\)$|\1|p' "$compose")
+          test_pg=$(git grep -hoE '\.with_tag\("[^"]+"\)' -- 'crates/reliar-store-postgres/tests/*' | sed 's|.*("\(.*\)")|\1|' | sort -u)
+          need "$compose_pg" "no postgres image found in $compose"
+          need "$test_pg" "no .with_tag(...) found in the provider tests"
+          if [ "$compose_pg" != "$test_pg" ]; then
+            echo "::error::PostgreSQL tag drifted: $compose has '$compose_pg', the provider tests have '$test_pg'"
+            exit 1
+          fi
+          # The matrix may be a superset (a second major the day one ships), but compose's major
+          # has to be in it or the stack a contributor runs is a major CI never tested.
+          if ! grep -q "\"$compose_pg\"" .github/workflows/test.yaml; then
+            echo "::error::test.yaml's postgres_tag matrix does not cover compose's '$compose_pg'"
+            exit 1
+          fi
+          echo "pinned: $compose_pgdog · postgres:$compose_pg"
 
   check:
     name: fmt · clippy · doc · features
@@ -130,29 +169,72 @@ jobs:
           toolchain: ${{ env.MSRV }}
       - uses: Swatinem/rust-cache@v2
       # `+$MSRV` is required: rust-toolchain.toml otherwise pins every cargo invocation.
-      # The exclusion list is computed, never hard-coded — see scripts/msrv-exclusions.py for why.
-      # The whole gate rests on "is this package's MSRV above the floor?", and the failure mode of
-      # getting that comparison wrong is silent: excluding everything leaves the job green having
-      # built nothing. Cheap to assert, so it is asserted.
-      - name: msrv-exclusions selftest
-        run: python3 scripts/msrv-exclusions.py --selftest
+      #
+      # ADR 0025 lets a provider crate declare its driver's MSRV (sqlx 0.9 needs 1.94) while the
+      # workspace floor stays lower (ADR 0024). Those packages cannot build on the floor
+      # toolchain, so this job excludes them; the `check` job covers them on the pinned toolchain
+      # instead — the exclusion narrows *which* toolchain covers them, never *whether*.
+      #
+      # The list is computed, never hard-coded: a hard-coded `--exclude reliar-store-postgres`
+      # left `examples/axum-outbox` — which merely depends on it — in the build, and the job
+      # failed. `cargo --exclude` only skips building a package as a *root*; a package is still
+      # built when an included member depends on it. So the dependent check below is not a
+      # nicety, it is what makes the exclusion sound: a member that depends on an above-floor
+      # package without declaring its own `rust-version` can neither build on the floor toolchain
+      # nor be excluded from it, and is an ADR-0025 error.
+      #
       - name: check on the MSRV toolchain
         run: |
           set -euo pipefail
+
+          # Versions are padded to exactly three components before they are compared. Without the
+          # padding jq compares the arrays by prefix, so [1,88,0] > [1,88] and a package declaring
+          # "1.88.0" against a floor written "1.88" reads as *above* the floor — which would
+          # exclude every member and leave this job green having built nothing. A gate that passes
+          # by building nothing is worse than no gate, and that failure is silent, so it is
+          # asserted before it is relied on.
+          pad='def pad: (split(".") | map(tonumber)) + [0, 0] | .[0:3];'
+          if [ "$(jq -nr --arg msrv "$MSRV" "$pad (\$msrv | pad) == (\$msrv + \".0\" | pad)")" != "true" ]; then
+            echo "::error::MSRV version padding is broken; the exclusion list cannot be trusted"
+            exit 1
+          fi
+
           # Assigned before the pipe: inside a pipeline `set -e` does not stop a failing
-          # `cargo metadata`, and the script's ADR-0025 error must fail the job.
+          # `cargo metadata`, and the ADR-0025 error below must fail the job.
           metadata=$(cargo metadata --no-deps --format-version 1)
-          exclusions=$(printf '%s' "$metadata" | python3 scripts/msrv-exclusions.py)
-          # One token per line into an array, rather than unquoted word splitting: a package name
-          # never contains a space today, but relying on IFS to build an argument list is the kind
-          # of thing that breaks silently rather than loudly.
-          # A read loop rather than `mapfile`, which bash 3.2 (still the system bash on macOS)
-          # does not have — scripts/ has to work on a contributor's machine, not just the runner.
+
+          # `.kind` is null for a normal dependency and "build" for a build one; `cargo check`
+          # without --all-targets builds neither dev-dependencies nor their graph, so those are
+          # not a problem here.
+          problems=$(printf '%s' "$metadata" | jq -r --arg msrv "$MSRV" "$pad"'
+            [.packages[] | select(((.rust_version // $msrv) | pad) > ($msrv | pad)) | .name] as $above
+            | [.packages[].name] as $members
+            | .packages[]
+            | select(.name as $n | ($above | index($n)) == null)
+            | . as $pkg
+            | .dependencies[]
+            | select(.kind == null or .kind == "build")
+            | select(.name as $d | ($members | index($d)) != null and ($above | index($d)) != null)
+            | "\($pkg.name) depends on \(.name), which declares an MSRV above the workspace floor \($msrv), but \($pkg.name) declares no rust-version of its own. It can neither build on the MSRV toolchain nor be excluded from it. Declare rust-version on \($pkg.name) (ADR 0025)."')
+          if [ -n "$problems" ]; then
+            while IFS= read -r problem; do echo "::error::$problem"; done <<< "$problems"
+            exit 1
+          fi
+
+          exclusions=$(printf '%s' "$metadata" | jq -r --arg msrv "$MSRV" "$pad"'
+            [.packages[] | select(((.rust_version // $msrv) | pad) > ($msrv | pad)) | .name] | sort | .[]')
+
+          # An array rather than unquoted word splitting: a package name never contains a space
+          # today, but relying on IFS to build an argument list breaks silently rather than loudly.
           args=()
-          while IFS= read -r token; do
+          while IFS= read -r name; do
             # An `if`, not `[ -n .. ] && ..`: under `set -e` the `&&` form exits the job on the
             # single empty line `<<<` produces when there is nothing to exclude — which is the
             # normal state once the workspace floor catches up with its providers.
-            if [ -n "$token" ]; then args+=("$token"); fi
+            if [ -n "$name" ]; then
+              echo "excluding $name (ADR 0025)"
+              args+=(--exclude "$name")
+            fi
           done <<< "$exclusions"
+
           cargo +"$MSRV" check --workspace --all-features "${args[@]}"
