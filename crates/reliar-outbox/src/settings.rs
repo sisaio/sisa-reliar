@@ -1,0 +1,545 @@
+//! The outbox feature's settings, with an opt-in environment loader (SRS §7.2, §23.1, ADR 0019).
+//!
+//! **The library never reads the environment implicitly.** No constructor, `Default` or builder
+//! method touches [`std::env`] — only [`OutboxSettings::from_env`] does, and only when called.
+
+use core::fmt;
+use std::env::VarError;
+use std::time::Duration;
+
+use crate::ordering::Ordering;
+use crate::retry::ExponentialBackoff;
+use crate::worker::WorkerId;
+
+/// The one settings struct for the outbox feature. Env prefix `RELIAR_OUTBOX_` by convention;
+/// [`OutboxSettings::from_env`] takes whatever prefix the caller passes.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[non_exhaustive]
+pub struct OutboxSettings {
+    /// Worker-loop tunables.
+    pub dispatcher: DispatcherSettings,
+    /// Purge tunables.
+    pub retention: RetentionSettings,
+}
+
+impl OutboxSettings {
+    /// Sets [`Self::dispatcher`].
+    #[must_use]
+    pub fn dispatcher(mut self, dispatcher: DispatcherSettings) -> Self {
+        self.dispatcher = dispatcher;
+        self
+    }
+
+    /// Sets [`Self::retention`].
+    #[must_use]
+    pub fn retention(mut self, retention: RetentionSettings) -> Self {
+        self.retention = retention;
+        self
+    }
+}
+
+/// Worker-loop tunables — the struct the §23.1 defaults table and the §26.1 drain rule refer
+/// to.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[non_exhaustive]
+pub struct DispatcherSettings {
+    /// The maximum number of rows one `acquire` **statement** claims. `BATCH_SIZE`. Default
+    /// 100.
+    ///
+    /// **`max_in_flight` is the real ceiling on rows this worker holds leased at once —
+    /// `batch_size` only caps a single claim.** The dispatcher claims only while
+    /// `outstanding < max_in_flight`, asking for `min(batch_size, max_in_flight - outstanding)`
+    /// (S4 review 2); with the accepted defaults (100 / 16) the claim never asks for more than
+    /// 16, so `batch_size` does not bind. Raise it only alongside `max_in_flight` if a single
+    /// worker is meant to hold more rows leased at once.
+    pub batch_size: u32,
+    /// How long a claim holds the lease before it may be reclaimed. `LEASE_MS`. Default 30 s.
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "lease_ms", with = "crate::duration_serde::millis")
+    )]
+    pub lease: Duration,
+    /// The maximum number of publishes running concurrently. `MAX_IN_FLIGHT`. Default 16.
+    pub max_in_flight: usize,
+    /// How long one publish is allowed to run before it counts as a timeout (classified
+    /// [`crate::FailureKind::Transient`]). `PUBLISH_TIMEOUT_MS`. Default 10 s.
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "publish_timeout_ms", with = "crate::duration_serde::millis")
+    )]
+    pub publish_timeout: Duration,
+    /// How often the loop polls for work when the previous claim was non-empty. `POLL_INTERVAL_MS`.
+    /// Default 500 ms. **Must be greater than zero**
+    /// ([`crate::ConfigError::ZeroPollInterval`], S4 review 7) — it also seeds the outcome-write
+    /// retry pacing (`outcome_retry_interval`), so a zero value would re-enable a CPU-speed spin
+    /// on both paths.
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "poll_interval_ms", with = "crate::duration_serde::millis")
+    )]
+    pub poll_interval: Duration,
+    /// How often the loop polls once it has seen an empty claim. `IDLE_POLL_INTERVAL_MS`.
+    /// Default 5 s. **Must be greater than zero**
+    /// ([`crate::ConfigError::ZeroPollInterval`], S4 review 7) — a zero value would poll an idle
+    /// store at CPU speed instead of backing off.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            rename = "idle_poll_interval_ms",
+            with = "crate::duration_serde::millis"
+        )
+    )]
+    pub idle_poll_interval: Duration,
+    /// The maximum time `run()` spends draining in-flight publishes after cancellation (§26.1).
+    /// `DRAIN_TIMEOUT_MS`. Default 30 s.
+    ///
+    /// With the defaults, worst-case shutdown is roughly **`drain_timeout + store_timeout`**,
+    /// not just `drain_timeout`: the drain loop itself is bounded by `drain_timeout`, and the one
+    /// best-effort outcome-write attempt made right after it is separately bounded by
+    /// `store_timeout` — the two budgets are not nested, they are sequential (S4 review 3,
+    /// minor).
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "drain_timeout_ms", with = "crate::duration_serde::millis")
+    )]
+    pub drain_timeout: Duration,
+    /// A client-side bound on **every** `OutboxStore` call `run` makes — without it a hung
+    /// statement (a lost connection with no server-side `statement_timeout`, a saturated pool)
+    /// makes `drain_timeout` unenforceable (S4 review). A timeout is treated as a transient
+    /// store error.
+    ///
+    /// **Must be shorter than half the lease** (`store_timeout < lease / 2`,
+    /// [`crate::ConfigError::StoreTimeoutTooLong`], S4 review 4): `run`'s outcome-write retry
+    /// races the lease-renewal tick inside the same `select!`, so a `store_timeout` any longer
+    /// could let one hung `complete`/`fail` attempt occupy an entire tick gap and starve
+    /// renewal. `STORE_TIMEOUT_MS`. Default 10 s (comfortably under half the default 30 s
+    /// lease's 15 s).
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "store_timeout_ms", with = "crate::duration_serde::millis")
+    )]
+    pub store_timeout: Duration,
+    /// How often `stats()` is polled for the lag/dead-count gauges. `STATS_INTERVAL_MS`.
+    /// Default 15 s.
+    #[cfg_attr(
+        feature = "serde",
+        serde(rename = "stats_interval_ms", with = "crate::duration_serde::millis")
+    )]
+    pub stats_interval: Duration,
+    /// The publication ordering strategy. `ORDERING`. Default [`Ordering::Unordered`].
+    pub ordering: Ordering,
+    /// The retry/backoff policy. `RETRY_BASE_MS`, `RETRY_MAX_DELAY_MS`,
+    /// `RETRY_MAX_ATTEMPTS`, `RETRY_JITTER`.
+    pub retry: ExponentialBackoff,
+    /// Overrides the generated [`WorkerId`]. `WORKER_ID`. Default: generated.
+    pub worker_id: Option<WorkerId>,
+}
+
+impl Default for DispatcherSettings {
+    fn default() -> Self {
+        Self {
+            batch_size: 100,
+            lease: Duration::from_secs(30),
+            max_in_flight: 16,
+            publish_timeout: Duration::from_secs(10),
+            poll_interval: Duration::from_millis(500),
+            idle_poll_interval: Duration::from_secs(5),
+            drain_timeout: Duration::from_secs(30),
+            store_timeout: Duration::from_secs(10),
+            stats_interval: Duration::from_secs(15),
+            ordering: Ordering::default(),
+            retry: ExponentialBackoff::default(),
+            worker_id: None,
+        }
+    }
+}
+
+impl DispatcherSettings {
+    /// Sets [`Self::batch_size`].
+    #[must_use]
+    pub const fn batch_size(mut self, batch_size: u32) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Sets [`Self::lease`].
+    #[must_use]
+    pub const fn lease(mut self, lease: Duration) -> Self {
+        self.lease = lease;
+        self
+    }
+
+    /// Sets [`Self::max_in_flight`].
+    #[must_use]
+    pub const fn max_in_flight(mut self, max_in_flight: usize) -> Self {
+        self.max_in_flight = max_in_flight;
+        self
+    }
+
+    /// Sets [`Self::publish_timeout`].
+    #[must_use]
+    pub const fn publish_timeout(mut self, publish_timeout: Duration) -> Self {
+        self.publish_timeout = publish_timeout;
+        self
+    }
+
+    /// Sets [`Self::poll_interval`].
+    #[must_use]
+    pub const fn poll_interval(mut self, poll_interval: Duration) -> Self {
+        self.poll_interval = poll_interval;
+        self
+    }
+
+    /// Sets [`Self::idle_poll_interval`].
+    #[must_use]
+    pub const fn idle_poll_interval(mut self, idle_poll_interval: Duration) -> Self {
+        self.idle_poll_interval = idle_poll_interval;
+        self
+    }
+
+    /// Sets [`Self::drain_timeout`].
+    #[must_use]
+    pub const fn drain_timeout(mut self, drain_timeout: Duration) -> Self {
+        self.drain_timeout = drain_timeout;
+        self
+    }
+
+    /// Sets [`Self::store_timeout`].
+    #[must_use]
+    pub const fn store_timeout(mut self, store_timeout: Duration) -> Self {
+        self.store_timeout = store_timeout;
+        self
+    }
+
+    /// Sets [`Self::stats_interval`].
+    #[must_use]
+    pub const fn stats_interval(mut self, stats_interval: Duration) -> Self {
+        self.stats_interval = stats_interval;
+        self
+    }
+
+    /// Sets [`Self::ordering`].
+    #[must_use]
+    pub const fn ordering(mut self, ordering: Ordering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    /// Sets [`Self::retry`].
+    #[must_use]
+    pub const fn retry(mut self, retry: ExponentialBackoff) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// Sets [`Self::worker_id`].
+    #[must_use]
+    pub fn worker_id(mut self, worker_id: WorkerId) -> Self {
+        self.worker_id = Some(worker_id);
+        self
+    }
+}
+
+/// Purge tunables.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[non_exhaustive]
+pub struct RetentionSettings {
+    /// How long a published row is kept before `purge` deletes it. `PUBLISHED_RETENTION_MS`.
+    /// Default 7 days.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            rename = "published_retention_ms",
+            with = "crate::duration_serde::millis"
+        )
+    )]
+    pub published_retention: Duration,
+    /// How long a dead row is kept before `purge` deletes it. `None` keeps dead rows until an
+    /// explicit purge. `DEAD_RETENTION_MS`. Default `None`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            rename = "dead_retention_ms",
+            with = "crate::duration_serde::optional_millis"
+        )
+    )]
+    pub dead_retention: Option<Duration>,
+    /// The maximum number of rows one purge pass deletes, per pass. `PURGE_BATCH_SIZE`.
+    /// Default 1000.
+    pub purge_batch_size: u32,
+}
+
+impl Default for RetentionSettings {
+    fn default() -> Self {
+        Self {
+            published_retention: Duration::from_secs(7 * 24 * 60 * 60),
+            dead_retention: None,
+            purge_batch_size: 1_000,
+        }
+    }
+}
+
+impl RetentionSettings {
+    /// Sets [`Self::published_retention`].
+    #[must_use]
+    pub const fn published_retention(mut self, retention: Duration) -> Self {
+        self.published_retention = retention;
+        self
+    }
+
+    /// Sets [`Self::dead_retention`].
+    #[must_use]
+    pub const fn dead_retention(mut self, retention: Option<Duration>) -> Self {
+        self.dead_retention = retention;
+        self
+    }
+
+    /// Sets [`Self::purge_batch_size`].
+    #[must_use]
+    pub const fn purge_batch_size(mut self, purge_batch_size: u32) -> Self {
+        self.purge_batch_size = purge_batch_size;
+        self
+    }
+}
+
+impl OutboxSettings {
+    /// Opt-in. Starts from [`Self::default`], overrides **only** the variables present under
+    /// `prefix`, and returns `Err` for a present-but-unparseable or out-of-range value — never
+    /// a silent fallback to the default. Env variable names are flat under `prefix` (e.g.
+    /// `{prefix}LEASE_MS`), regardless of which nested settings struct they populate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError::Parse`] for a present variable that cannot be parsed as its
+    /// declared type (a bad UTF-8 value counts as unparseable), or
+    /// [`SettingsError::OutOfRange`] for one that parses but violates a documented bound (a
+    /// `RETRY_JITTER` outside `[0.0, 1.0)`, a `WORKER_ID` over its maximum length).
+    pub fn from_env(prefix: &str) -> Result<Self, SettingsError> {
+        let mut dispatcher = DispatcherSettings::default();
+        let mut retention = RetentionSettings::default();
+
+        if let Some(v) = env_u32(prefix, "BATCH_SIZE")? {
+            dispatcher.batch_size = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "LEASE_MS")? {
+            dispatcher.lease = v;
+        }
+        if let Some(v) = env_usize(prefix, "MAX_IN_FLIGHT")? {
+            dispatcher.max_in_flight = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "PUBLISH_TIMEOUT_MS")? {
+            dispatcher.publish_timeout = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "POLL_INTERVAL_MS")? {
+            dispatcher.poll_interval = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "IDLE_POLL_INTERVAL_MS")? {
+            dispatcher.idle_poll_interval = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "DRAIN_TIMEOUT_MS")? {
+            dispatcher.drain_timeout = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "STORE_TIMEOUT_MS")? {
+            dispatcher.store_timeout = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "STATS_INTERVAL_MS")? {
+            dispatcher.stats_interval = v;
+        }
+        if let Some(v) = env_ordering(prefix, "ORDERING")? {
+            dispatcher.ordering = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "RETRY_BASE_MS")? {
+            dispatcher.retry.base = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "RETRY_MAX_DELAY_MS")? {
+            dispatcher.retry.max_delay = v;
+        }
+        if let Some(v) = env_u32(prefix, "RETRY_MAX_ATTEMPTS")? {
+            dispatcher.retry.max_attempts = v;
+        }
+        if let Some(v) = env_jitter(prefix, "RETRY_JITTER")? {
+            dispatcher.retry.jitter = v;
+        }
+        if let Some(v) = env_worker_id(prefix, "WORKER_ID")? {
+            dispatcher.worker_id = Some(v);
+        }
+
+        if let Some(v) = env_duration_ms(prefix, "PUBLISHED_RETENTION_MS")? {
+            retention.published_retention = v;
+        }
+        if let Some(v) = env_duration_ms(prefix, "DEAD_RETENTION_MS")? {
+            retention.dead_retention = Some(v);
+        }
+        if let Some(v) = env_u32(prefix, "PURGE_BATCH_SIZE")? {
+            retention.purge_batch_size = v;
+        }
+
+        Ok(Self {
+            dispatcher,
+            retention,
+        })
+    }
+}
+
+/// Why [`OutboxSettings::from_env`] failed.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum SettingsError {
+    /// A present variable could not be parsed as its declared type. The value is **never
+    /// echoed** — it may carry an operator's typo of something sensitive.
+    Parse {
+        /// The full environment variable name, including the prefix.
+        key: String,
+        /// The type or shape that was expected, e.g. `"u32"`, `"milliseconds"`.
+        value_kind: &'static str,
+    },
+    /// A present variable parsed but violated a documented bound.
+    OutOfRange {
+        /// The full environment variable name, including the prefix.
+        key: String,
+        /// The bound that was violated.
+        message: &'static str,
+    },
+}
+
+/// **Public constructors, because every provider's `from_env` returns this type** (contract §7
+/// I3). `SettingsError` is `#[non_exhaustive]`, so a crate other than `reliar-outbox` — e.g.
+/// `reliar-store-postgres` — cannot build a variant with struct-literal syntax; without these a
+/// provider is forced into a parallel, unrelated error type, and a host wiring two `from_env`
+/// calls ends up handling two different errors for the same class of failure (ADR 0019).
+impl SettingsError {
+    /// The variable was present but did not parse. `value_kind` names the expected shape
+    /// (`"u32"`, `"milliseconds"`); the offending **value is never carried**.
+    #[must_use]
+    pub fn parse(key: impl Into<String>, value_kind: &'static str) -> Self {
+        Self::Parse {
+            key: key.into(),
+            value_kind,
+        }
+    }
+
+    /// The variable parsed but is outside the range the setting accepts.
+    #[must_use]
+    pub fn out_of_range(key: impl Into<String>, message: &'static str) -> Self {
+        Self::OutOfRange {
+            key: key.into(),
+            message,
+        }
+    }
+
+    /// The full environment-variable name, prefix included — what an operator has to go fix.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Parse { key, .. } | Self::OutOfRange { key, .. } => key,
+        }
+    }
+}
+
+impl fmt::Display for SettingsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse { key, value_kind } => {
+                write!(f, "{key} could not be parsed as {value_kind}")
+            }
+            Self::OutOfRange { key, message } => {
+                write!(f, "{key} is out of range: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SettingsError {}
+
+/// Reads one raw environment variable under `prefix`. `Ok(None)` when absent; a present but
+/// non-UTF-8 value is treated as unparseable rather than panicking or silently skipping it.
+fn env_raw(prefix: &str, suffix: &str) -> Result<Option<String>, SettingsError> {
+    let key = format!("{prefix}{suffix}");
+    match std::env::var(&key) {
+        Ok(value) => Ok(Some(value)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(VarError::NotUnicode(_)) => Err(SettingsError::parse(key, "a UTF-8 string")),
+    }
+}
+
+fn env_u32(prefix: &str, suffix: &str) -> Result<Option<u32>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    raw.trim()
+        .parse::<u32>()
+        .map(Some)
+        .map_err(|_| SettingsError::parse(format!("{prefix}{suffix}"), "u32"))
+}
+
+fn env_usize(prefix: &str, suffix: &str) -> Result<Option<usize>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    raw.trim()
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| SettingsError::parse(format!("{prefix}{suffix}"), "usize"))
+}
+
+fn env_duration_ms(prefix: &str, suffix: &str) -> Result<Option<Duration>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    let ms = raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| SettingsError::parse(format!("{prefix}{suffix}"), "milliseconds"))?;
+    Ok(Some(Duration::from_millis(ms)))
+}
+
+fn env_jitter(prefix: &str, suffix: &str) -> Result<Option<f64>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    let key = format!("{prefix}{suffix}");
+    let value = raw
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| SettingsError::parse(key.clone(), "f64"))?;
+    if !(0.0..1.0).contains(&value) {
+        return Err(SettingsError::out_of_range(
+            key,
+            "jitter must be in the range [0.0, 1.0)",
+        ));
+    }
+    Ok(Some(value))
+}
+
+fn env_ordering(prefix: &str, suffix: &str) -> Result<Option<Ordering>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "unordered" => Ok(Some(Ordering::Unordered)),
+        "per_key" | "perkey" | "per-key" => Ok(Some(Ordering::PerKey)),
+        _ => Err(SettingsError::parse(
+            format!("{prefix}{suffix}"),
+            "ordering (\"unordered\" or \"per_key\")",
+        )),
+    }
+}
+
+fn env_worker_id(prefix: &str, suffix: &str) -> Result<Option<WorkerId>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    let key = format!("{prefix}{suffix}");
+    WorkerId::parse(raw).map(Some).map_err(|err| match err {
+        reliar_core::IdError::TooLong { .. } => {
+            SettingsError::out_of_range(key, "worker id exceeds the maximum length")
+        }
+        _ => SettingsError::parse(key, "worker id"),
+    })
+}

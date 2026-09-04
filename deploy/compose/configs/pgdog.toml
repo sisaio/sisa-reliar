@@ -1,0 +1,19 @@
+# PgDog in transaction mode, in front of the compose `postgres` service (profile `pooler`).
+# Decision #31: PgDog is the transaction-mode pooler Reliar reproduces and tests against.
+#
+# No credentials here on purpose. `[[databases]]` needs no `password` — PgDog authenticates to the
+# upstream server with the matching `[[users]]` entry (verified against v0.1.46: the server
+# connection comes up with `auth=scram, source=config`). That entry carries the only secret, so
+# `docker-compose.yaml` generates `users.toml` from `${RELIAR_PG_PASSWORD}` instead of committing it.
+
+[general]
+host = "0.0.0.0"
+port = 6432
+pooler_mode = "transaction"
+
+[[databases]]
+name = "reliar"
+host = "postgres"
+port = 5432
+database_name = "reliar"
+user = "reliar"

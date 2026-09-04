@@ -1,0 +1,318 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH claimed AS (\n               SELECT id FROM outbox\n                WHERE published_at IS NULL AND dead_at IS NULL\n                  AND available_at <= now()\n                  AND (locked_until IS NULL OR locked_until < now())\n                  AND (expires_at IS NULL OR expires_at > now())\n                ORDER BY available_at, sequence\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n           )\n           UPDATE outbox o\n              SET locked_by    = $2,\n                  locked_until = now() + ($3::bigint * interval '1 millisecond'),\n                  updated_at   = now()\n             FROM claimed\n            WHERE o.id = claimed.id\n           RETURNING o.id, o.sequence, o.message_type, o.message_version,\n                     o.correlation_id, o.conversation_id, o.causation_id, o.request_id,\n                     o.content_type, o.payload, o.tenant_id, o.expires_at, o.ordering_key,\n                     o.metadata, o.headers, o.metadata_version,\n                     o.created_at, o.available_at,\n                     o.attempts, o.locked_by, o.locked_until,\n                     o.published_at, o.dead_at, o.dead_reason, o.last_error",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sequence",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "message_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "message_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "message_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "message_version"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "correlation_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "correlation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "conversation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "conversation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "causation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "causation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "request_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "payload",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "tenant_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "tenant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "ordering_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "ordering_key"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "metadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "headers",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "headers"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "metadata_version",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "metadata_version"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "available_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "available_at"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "locked_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "locked_by"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "locked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "locked_until"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "published_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "published_at"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "dead_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "dead_at"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "dead_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "dead_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 24,
+        "name": "last_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "last_error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "74f51f155fa66475020067d808fc00ca0cff288cafa2a6488238b16132db1c4c"
+}

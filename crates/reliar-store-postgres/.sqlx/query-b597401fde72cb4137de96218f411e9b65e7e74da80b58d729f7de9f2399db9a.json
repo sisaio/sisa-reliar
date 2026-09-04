@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO outbox (\n             id, message_type, message_version,\n             correlation_id, conversation_id, causation_id, request_id,\n             content_type, payload, tenant_id, expires_at, ordering_key,\n             metadata, headers, available_at\n           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4",
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Text",
+        "Timestamptz",
+        "Text",
+        "Jsonb",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b597401fde72cb4137de96218f411e9b65e7e74da80b58d729f7de9f2399db9a"
+}

@@ -1,0 +1,4 @@
+# Stable-only. `imports_granularity` / `group_imports` were dropped: they are nightly-gated, so the
+# pinned stable `cargo fmt` in CI ignored them and no import style was ever actually enforced.
+# Reinstating them means adding a `cargo +nightly fmt --check` job, which is a separate decision.
+edition = "2024"

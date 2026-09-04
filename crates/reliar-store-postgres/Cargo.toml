@@ -1,0 +1,78 @@
+[package]
+name = "reliar-store-postgres"
+version = "0.1.0"
+description = "PostgreSQL provider for the Reliar transactional outbox: migrations, migrate(), enqueue and the SKIP LOCKED claim."
+edition.workspace = true
+# Overrides the workspace floor (1.88): sqlx 0.9 declares `rust-version = "1.94"`, six releases
+# above anything Reliar's own code needs. Provider crates may carry their driver's MSRV; pure
+# crates (`reliar-core`, `reliar-outbox`) may not (ADR 0025). Documented again in `lib.rs`/README.
+rust-version = "1.94"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+# RELIAR-27: Cargo's `tests/*.rs` auto-discovery turned every one of the ~25 Postgres scenario
+# files into its own test binary — 25 processes, each starting (and, per the bug this fixes,
+# never removing) its own Postgres container. Turns that off; the one `[[test]]` block below is
+# the *only* Postgres-touching binary this crate now builds.
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["json"]
+## `PostgresOutboxStore<JsonSerializer>`'s default type parameter and the `new`/`with_settings`
+## convenience constructors. Forwards `reliar-core/json`. Not hard-enabled: a deployment
+## supplying its own `Serializer` should not pull in `serde_json`.
+json = ["reliar-core/json"]
+## `serde` derive on `PostgresOutboxSettings`, `#[serde(default, deny_unknown_fields)]`,
+## durations as integer milliseconds. `serde` itself is always a dependency — it also drives the
+## crate's private `MetadataRest` JSONB contract (ADR 0012), which is not feature-gated.
+serde = ["serde/std"]
+
+[dependencies]
+reliar-core = { workspace = true }
+reliar-outbox = { workspace = true }
+sqlx = { workspace = true }
+bytes.workspace = true
+uuid.workspace = true
+time = { workspace = true, features = ["serde", "parsing", "formatting", "serde-human-readable"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-util.workspace = true
+proptest.workspace = true
+serde_json.workspace = true
+# `watchdog` (RELIAR-27, architect ruling §9): testcontainers 0.27 has no reaper — removal is
+# `ContainerAsync::Drop`, full stop — so this is the *only* thing that removes a container on
+# SIGINT/SIGTERM/SIGQUIT (Ctrl-C, CI cancellation). `Drop` alone still covers normal exit and
+# panics; this is the belt to that braces.
+testcontainers = { workspace = true, features = ["watchdog"] }
+testcontainers-modules.workspace = true
+libtest-mimic = "0.8"
+# Test-only: the recording-subscriber pattern for §43.A.36's "warns on a same-named table"
+# assertion. Not a workspace dependency — no other crate's tests need it yet.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+reliar-outbox = { workspace = true, features = ["test-support"] }
+
+# The single Postgres-touching test binary (RELIAR-27, architect ruling §9): `harness = false` +
+# `libtest-mimic` so `tests/postgres/main.rs`'s `fn main` owns the shared `ContainerAsync` as a
+# **local**, runs every scenario (one `mod` per former file) as a `Trial` on a shared Tokio
+# runtime, then drops the container explicitly before exiting — never via `Conclusion::exit()`,
+# which calls `process::exit` and would skip that `Drop` and reproduce the leak.
+[[test]]
+name = "postgres"
+path = "tests/postgres/main.rs"
+harness = false
+required-features = ["json"]
+
+# The one test file with nothing to do with Postgres — no container, so it stays outside the
+# single consolidated binary above; `cargo test`'s default harness suits it fine as is.
+[[test]]
+name = "outbox_settings_from_env"

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT n.nspname\n             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace\n            WHERE c.relname = 'outbox' AND n.nspname <> $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "nspname",
+        "type_info": "Name",
+        "origin": {
+          "Table": {
+            "table": "pg_namespace",
+            "name": "nspname"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Name"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "47627311c82c7ddad1443542a58bf0dd574ea84ee14f192d66806b96df16cdac"
+}

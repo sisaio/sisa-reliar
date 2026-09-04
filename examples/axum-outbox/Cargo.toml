@@ -1,0 +1,28 @@
+[package]
+name = "axum-outbox"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+# Overrides the workspace floor (1.88): this example depends on `reliar-store-postgres`, which
+# declares `rust-version = "1.94"` because `sqlx` 0.9 requires it (ADR 0025) — pure crates
+# (`reliar-core`, `reliar-outbox`) stay reachable on 1.88, but anything pulling in the Postgres
+# provider inherits its floor. `examples/outbox-basic` has no such dependency and keeps the
+# workspace floor.
+rust-version = "1.94"
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reliar-core = { workspace = true, features = ["json"] }
+reliar-outbox = { workspace = true }
+reliar-store-postgres = { workspace = true, features = ["json"] }
+sqlx = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net"] }
+tokio-util = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

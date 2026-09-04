@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_setting('search_path')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_setting",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4706c8f757b603451fa6289802fba4346089cd9faa9c9a7556844dfcd3503bf5"
+}

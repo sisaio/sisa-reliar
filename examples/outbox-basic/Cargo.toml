@@ -1,0 +1,19 @@
+[package]
+name = "outbox-basic"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reliar-core = { workspace = true, features = ["json"] }
+reliar-outbox = { workspace = true, features = ["test-support"] }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.98.0"
+# llvm-tools-preview is required by cargo-llvm-cov; the pinned channel (not the CI-installed
+# stable) is what actually runs, so the component has to be here.
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+profile = "minimal"
