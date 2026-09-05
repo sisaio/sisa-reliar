@@ -6,7 +6,8 @@ selection a transport-side concern, out of `reliar-core` (SRS §12, §18, ADR 00
 
 Depends on `reliar-core` only (plus `async-nats`) — `Publisher`, `Classify`, `FailureKind` and
 `SettingsError` all live in `reliar-core` (ADR 0032). No other provider crate depends on it and it
-depends on no other provider.
+depends on no other provider. That means it is fully usable standalone, with `reliar-core` alone
+and no `reliar-outbox`/`reliar-store-postgres` in the graph (see "Standalone use" below).
 
 ## Status: S2 of 3
 
@@ -84,7 +85,47 @@ assert_eq!(subject.as_str(), "app.orders.created.v1");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-## Composition
+## Standalone use (`reliar-core` only)
+
+No outbox required: build an `Envelope`, serialize its body, and publish it directly through a
+`JetStream` context the application already owns. This is the same `Envelope`/`Serializer`/
+`Publisher` vocabulary `reliar-outbox` uses internally — nothing here is outbox-specific.
+
+What you get without the outbox: the canonical header projection (`reliar-*`, W3C trace headers,
+custom headers verbatim), `Nats-Msg-Id` for `JetStream` duplicate suppression, an awaited ack, and
+per-variant transient/permanent classification on the error. What you do **not** get: a
+transactional guarantee — a direct `publish` happens when you call it, whether or not your
+database transaction commits. Add `reliar-outbox` + a store only when you need that (see
+"Composition with the outbox" below).
+
+```rust,no_run
+use reliar_core::{Envelope, JsonSerializer, Message, Publisher, Serializer};
+use reliar_transport_nats::{NatsPublisher, NatsSettings};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OrderCreated { order_id: u64 }
+impl Message for OrderCreated {
+    const TYPE: &'static str = "orders.created";
+    const VERSION: u16 = 1;
+}
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = async_nats::connect(&std::env::var("NATS_URL")?).await?;   // the app owns the connection
+let js = async_nats::jetstream::new(client);                              // and the stream (ADR 0029)
+let publisher = NatsPublisher::new(js, NatsSettings::default().subject_prefix("app"))?;
+
+let envelope = Envelope::builder(OrderCreated { order_id: 42 }).build();
+let bytes = JsonSerializer.serialize(&envelope.body)?;                    // Envelope<T>'s body → Bytes
+let mut serialized = envelope.map_body(|_| bytes);                        // Envelope<T> → SerializedEnvelope
+serialized.metadata.delivery.content_type = JsonSerializer.content_type().clone();
+publisher.publish(&serialized).await?;                                    // returns after the JetStream ack
+# Ok(()) }
+```
+
+## Composition with the outbox (optional)
+
+Add `reliar-outbox` + a store (e.g. `reliar-store-postgres`) when a message must publish
+**exactly once per successful transaction** — the outbox pattern, not this crate's job alone:
 
 ```rust,ignore
 let client = async_nats::connect(&std::env::var("NATS_URL")?).await?;   // the app reads the env

@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use reliar_core::{Envelope, Message, MessageId, SerializedEnvelope};
+use reliar_core::{ContentType, Envelope, Message, MessageId, SerializedEnvelope, Serializer};
 use serde::{Deserialize, Serialize};
 
 /// A minimal message body used across scenario files.
@@ -16,6 +16,104 @@ pub(crate) struct OrderCreated {
 impl Message for OrderCreated {
     const TYPE: &'static str = "orders.created";
     const VERSION: u16 = 1;
+}
+
+/// Three distinct message types for router selective-routing scenarios (§43.D3), where the rule
+/// must be exercised on more than one `MessageType` name in the same test.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TypeA;
+impl Message for TypeA {
+    const TYPE: &'static str = "a";
+    const VERSION: u16 = 1;
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TypeB;
+impl Message for TypeB {
+    const TYPE: &'static str = "b";
+    const VERSION: u16 = 1;
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct TypeC;
+impl Message for TypeC {
+    const TYPE: &'static str = "c";
+    const VERSION: u16 = 1;
+}
+
+/// A minimal [`Serializer`] fixture: `reliar-outbox` names no wire format of its own (ADR 0033
+/// §13), so router tests bring their own rather than depending on `reliar-core`'s `json` feature.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RawJson;
+
+impl Serializer for RawJson {
+    type Error = serde_json::Error;
+
+    fn content_type(&self) -> &ContentType {
+        &ContentType::JSON
+    }
+
+    fn serialize<T: Message>(&self, body: &T) -> Result<Bytes, Self::Error> {
+        serde_json::to_vec(body).map(Bytes::from)
+    }
+
+    fn deserialize<T: Message>(&self, bytes: &[u8]) -> Result<T, Self::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+/// A [`Serializer`] fixture whose `ContentType` is deliberately **not** JSON — the non-JSON
+/// fixture review round 2's M1 asks for: it proves [`crate::ScopedOutboxPublisher`]/
+/// [`reliar_outbox::OutboxPublisher::publish_direct`] persist/forward
+/// `metadata.delivery.content_type` **verbatim** rather than merely happening to agree with a
+/// JSON default that every other fixture in this crate also produces.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct VndSerializer;
+
+impl Serializer for VndSerializer {
+    type Error = serde_json::Error;
+
+    #[allow(clippy::expect_used, reason = "a fixture, not a #[test] body")]
+    fn content_type(&self) -> &ContentType {
+        static CONTENT_TYPE: std::sync::LazyLock<ContentType> = std::sync::LazyLock::new(|| {
+            ContentType::parse("application/vnd.reliar-test+json").expect("valid content type")
+        });
+        &CONTENT_TYPE
+    }
+
+    fn serialize<T: Message>(&self, body: &T) -> Result<Bytes, Self::Error> {
+        serde_json::to_vec(body).map(Bytes::from)
+    }
+
+    fn deserialize<T: Message>(&self, bytes: &[u8]) -> Result<T, Self::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+/// Serializes `envelope` exactly the way a caller of [`reliar_outbox::OutboxPublisher`] must —
+/// the three-line block contract §4.2 describes and the crate's own doctest shows: serialize the
+/// body, replace it, then set `metadata.delivery.content_type` to the serializer's own type.
+/// Nothing in `reliar-outbox` performs this step any more (Amendment D §3) — every routing test
+/// in this crate does it itself, through this one helper.
+///
+/// # Errors
+///
+/// Whatever `serializer.serialize` returns.
+pub(crate) fn serialize_with<T: Message, Ser: Serializer>(
+    envelope: Envelope<T>,
+    ser: &Ser,
+) -> Result<SerializedEnvelope, Ser::Error> {
+    let bytes = ser.serialize(&envelope.body)?;
+    let mut out = envelope.map_body(|_| bytes);
+    out.metadata.delivery.content_type = ser.content_type().clone();
+    Ok(out)
+}
+
+/// [`serialize_with`] over [`RawJson`], for the many tests that don't care which serializer was
+/// used.
+#[allow(clippy::expect_used, reason = "a fixture, not a #[test] body")]
+pub(crate) fn serialize(envelope: Envelope<impl Message>) -> SerializedEnvelope {
+    serialize_with(envelope, &RawJson).expect("RawJson never fails")
 }
 
 /// Builds a [`SerializedEnvelope`] without a real serializer — the body bytes are irrelevant to
@@ -116,6 +214,11 @@ impl RecordingSubscriber {
             .with_writer(writer)
             .with_ansi(false)
             .with_max_level(tracing::Level::TRACE)
+            // `CLOSE` prints each span's name and recorded fields once it ends, even for a span
+            // that never logs an event of its own (`reliar.outbox.route`, §43.D/R13) — without
+            // this, a leak-free span with no event would leave nothing in the transcript to
+            // assert against.
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
             .finish();
         let guard = tracing::subscriber::set_default(subscriber);
         (Self { buffer }, guard)

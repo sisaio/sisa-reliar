@@ -5,10 +5,11 @@ use core::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use reliar_core::{Classify, FailureKind, MessageId};
+use reliar_core::{Classify, FailureKind, MessageId, SerializedEnvelope};
 use time::OffsetDateTime;
 
 use crate::record::{OutboxRecord, truncate_error};
+use crate::staging::OutboxStaging;
 use crate::store::{
     AcquireRequest, AcquiredBatch, CompletedMessage, DeadLetterPage, DeadQuery, DeadReason,
     FailedMessage, FailureOutcome, MessageRef, OutboxDeadLetters, OutboxStats, OutboxStore,
@@ -60,6 +61,8 @@ struct Inner {
     hang_duration: Duration,
     complete_calls: usize,
     fail_next_complete: usize,
+    fail_next_enqueue: usize,
+    enqueue_calls: usize,
 }
 
 impl Default for Inner {
@@ -74,6 +77,8 @@ impl Default for Inner {
             hang_duration: Duration::ZERO,
             complete_calls: 0,
             fail_next_complete: 0,
+            fail_next_enqueue: 0,
+            enqueue_calls: 0,
         }
     }
 }
@@ -199,6 +204,40 @@ impl InMemoryOutboxStore {
     /// `outcome_retry_interval` allows (S4 review 5, blocker).
     pub fn fail_next_complete(&self, n: usize) {
         self.lock().fail_next_complete = n;
+    }
+
+    /// Makes the next `n` calls to [`OutboxStaging::stage`] fail with
+    /// [`InMemoryStoreError::Injected`] (`Transient`) — drives [`crate::ScopedOutboxPublisher`]'s
+    /// routed error path (SRS §43.D, R11) without touching any other `OutboxStore` method.
+    pub fn fail_next_enqueue(&self, n: usize) {
+        self.lock().fail_next_enqueue = n;
+    }
+
+    /// How many times [`OutboxStaging::stage`] has been called, whether it went on to fail an
+    /// injected failure or succeed.
+    #[must_use]
+    pub fn enqueue_call_count(&self) -> usize {
+        self.lock().enqueue_calls
+    }
+
+    /// Consumes one unit of an armed enqueue-specific failure, if any is pending.
+    fn take_fail_next_enqueue(&self) -> bool {
+        let mut inner = self.lock();
+        if inner.fail_next_enqueue > 0 {
+            inner.fail_next_enqueue -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn try_enqueue(&self, envelope: &SerializedEnvelope) -> Result<MessageId, InMemoryStoreError> {
+        self.lock().enqueue_calls += 1;
+        if self.take_fail_next_enqueue() {
+            return Err(InMemoryStoreError::Injected);
+        }
+        let message_ref = self.insert(envelope.clone());
+        Ok(message_ref.id)
     }
 
     /// Consumes one unit of an armed complete-specific fast failure, if any is pending.
@@ -770,5 +809,23 @@ impl Classify for InMemoryStoreError {
             Self::Injected => FailureKind::Transient,
             Self::InjectedPermanent => FailureKind::Permanent,
         }
+    }
+}
+
+/// A stand-in for a provider transaction in fake-driven tests: it carries no state, it exists so
+/// a test exercises the same `in_transaction(&mut tx)` shape a real host does.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InMemoryTransaction;
+
+impl OutboxStaging<InMemoryTransaction> for InMemoryOutboxStore {
+    type Error = InMemoryStoreError;
+
+    fn stage(
+        &self,
+        _tx: &mut InMemoryTransaction,
+        envelope: &SerializedEnvelope,
+    ) -> impl Future<Output = Result<MessageId, Self::Error>> + Send {
+        let result = self.try_enqueue(envelope);
+        std::future::ready(result)
     }
 }

@@ -7,9 +7,10 @@
 use std::time::Duration;
 
 use reliar_core::MessageType;
-use reliar_outbox::{DeadReason, FailureKind, OutboxMetrics, RecordingMetrics};
+use reliar_outbox::{DeadReason, FailureKind, OutboxMetrics, RecordingMetrics, RouteKind};
 
-/// Drives every hook generically, exactly as `OutboxDispatcher` will.
+/// Drives every hook generically, exactly as `OutboxDispatcher` (or a
+/// [`reliar_outbox::ScopedOutboxPublisher`]) will.
 fn drive<M: OutboxMetrics>(metrics: &M, message_type: &MessageType) {
     metrics.claimed(3);
     metrics.published(2, message_type);
@@ -20,6 +21,7 @@ fn drive<M: OutboxMetrics>(metrics: &M, message_type: &MessageType) {
     metrics.expired_pending(2);
     metrics.oldest_pending_age(Duration::from_secs(9));
     metrics.purged(4, 1);
+    metrics.routed(RouteKind::Outbox, message_type);
 }
 
 #[test]
@@ -38,12 +40,13 @@ fn every_hook_call_is_observable_through_its_getter() {
     assert_eq!(metrics.dead(), vec![DeadReason::AttemptsExhausted]);
     assert_eq!(
         metrics.publish_duration(),
-        Some((Duration::from_millis(5), message_type))
+        Some((Duration::from_millis(5), message_type.clone()))
     );
     assert_eq!(metrics.pending(), Some(7));
     assert_eq!(metrics.expired_pending(), Some(2));
     assert_eq!(metrics.oldest_pending_age(), Some(Duration::from_secs(9)));
     assert_eq!(metrics.purged(), Some((4, 1)));
+    assert_eq!(metrics.routed(), vec![(RouteKind::Outbox, message_type)]);
 }
 
 #[test]
@@ -59,4 +62,5 @@ fn getters_start_empty_before_any_call() {
     );
     assert!(metrics.purged().is_none());
     assert!(metrics.publish_duration().is_none());
+    assert!(metrics.routed().is_empty());
 }

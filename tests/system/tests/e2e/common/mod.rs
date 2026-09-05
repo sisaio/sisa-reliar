@@ -8,7 +8,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use reliar_core::{Envelope, JsonSerializer, Message};
+use reliar_core::{Envelope, JsonSerializer, Message, SerializedEnvelope, Serializer as _};
 use reliar_outbox::DispatcherSettings;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
@@ -41,6 +41,18 @@ pub(crate) struct OrderCreated {
 
 impl Message for OrderCreated {
     const TYPE: &'static str = "orders.created";
+    const VERSION: u16 = 1;
+}
+
+/// A second, distinct message type — used by the routing scenarios (E5/E6, RELIAR-45) to prove a
+/// disallowed/non-routed type publishes directly while `OrderCreated` stays durable.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct AuditLogged {
+    pub event: String,
+}
+
+impl Message for AuditLogged {
+    const TYPE: &'static str = "audit.logged";
     const VERSION: u16 = 1;
 }
 
@@ -145,6 +157,18 @@ pub(crate) async fn seed(
     envelopes
 }
 
+/// The caller's own three-line serialization block (contract §4.2, Amendment D §3): nothing in
+/// `reliar-outbox`/`reliar-store-postgres` serializes on the routing publisher's path, so E5/E6
+/// build the [`SerializedEnvelope`] value themselves, exactly as a real host would before calling
+/// `OutboxPublisher::in_transaction(..).publish(..)` or `publish_direct(..)`.
+pub(crate) fn serialize<T: Message>(envelope: Envelope<T>) -> SerializedEnvelope {
+    let ser = JsonSerializer;
+    let bytes = ser.serialize(&envelope.body).expect("serialize body");
+    let mut serialized = envelope.map_body(|_| bytes);
+    serialized.metadata.delivery.content_type = ser.content_type().clone();
+    serialized
+}
+
 /// Whether `id`'s row has been published.
 pub(crate) async fn is_published(pool: &PgPool, id: reliar_core::MessageId) -> bool {
     sqlx::query_scalar("SELECT published_at IS NOT NULL FROM outbox WHERE id = $1")
@@ -205,6 +229,17 @@ pub(crate) async fn dead_row_count(pool: &PgPool) -> i64 {
         .fetch_one(pool)
         .await
         .expect("query dead count")
+}
+
+/// How many rows in `outbox` carry `id` — `0` or `1`. Used by the routing scenarios (E5/E6) to
+/// prove a directly published envelope was **never** staged, and that a rolled-back routed
+/// envelope never became visible.
+pub(crate) async fn row_count_for(pool: &PgPool, id: reliar_core::MessageId) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM outbox WHERE id = $1")
+        .bind(id.as_uuid())
+        .fetch_one(pool)
+        .await
+        .expect("query row count")
 }
 
 /// How many rows in `outbox` have never been claimed. `attempts == 0` implies `acquire` never

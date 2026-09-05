@@ -14,15 +14,51 @@ use crate::worker::WorkerId;
 
 /// The one settings struct for the outbox feature. Env prefix `RELIAR_OUTBOX_` by convention;
 /// [`OutboxSettings::from_env`] takes whatever prefix the caller passes.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default, deny_unknown_fields))]
+#[cfg_attr(feature = "serde", serde(try_from = "OutboxSettingsRepr"))]
 #[non_exhaustive]
 pub struct OutboxSettings {
     /// Worker-loop tunables.
     pub dispatcher: DispatcherSettings,
     /// Purge tunables.
     pub retention: RetentionSettings,
+    /// `true` (the default): the routing rule applies to messages published through
+    /// [`crate::OutboxPublisher`]. `false`: **every** message publishes directly and the store is
+    /// never touched — [`Self::allowed_types`] and [`Self::disallowed_types`] are both ignored.
+    ///
+    /// **This stops new messages entering the outbox; it never stops draining.** Rows already
+    /// staged are still claimed and published by [`crate::OutboxDispatcher`], so a deployment
+    /// that flips this to `false` keeps its dispatcher running until the backlog is empty. This
+    /// sentence is the whole reason the field is called `enabled` and not something longer — the
+    /// rustdoc carries the nuance a name cannot (ADR 0033 Amendment A).
+    pub enabled: bool,
+    /// The message-type names that route through the outbox. **Empty (the default) means every
+    /// type is routed** — the durable default. Ignored when [`Self::enabled`] is `false`, and
+    /// overridden per type by [`Self::disallowed_types`].
+    pub allowed_types: MessageTypeNames,
+    /// The message-type names that publish **directly** even while routing is enabled.
+    /// **Disallow wins over allow**, so "everything except `c`" is an empty
+    /// [`Self::allowed_types`] plus `disallowed_types = [c]` — the primary rollout shape.
+    ///
+    /// A name present in **both** lists is a configuration error at construction, never a silent
+    /// tie-break ([`crate::OutboxPolicy::from_settings`]).
+    pub disallowed_types: MessageTypeNames,
+}
+
+/// **Hand-written, never derived**: a derived `Default` would give `enabled = false` (`bool`'s
+/// own default), silently disabling the durable default the whole point of `enabled` is to
+/// preserve.
+impl Default for OutboxSettings {
+    fn default() -> Self {
+        Self {
+            dispatcher: DispatcherSettings::default(),
+            retention: RetentionSettings::default(),
+            enabled: true,
+            allowed_types: MessageTypeNames::empty(),
+            disallowed_types: MessageTypeNames::empty(),
+        }
+    }
 }
 
 impl OutboxSettings {
@@ -38,6 +74,200 @@ impl OutboxSettings {
     pub fn retention(mut self, retention: RetentionSettings) -> Self {
         self.retention = retention;
         self
+    }
+
+    /// Sets [`Self::enabled`].
+    #[must_use]
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Sets [`Self::allowed_types`].
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::OutOfRange`] with `key = "allowed_types"` when `allowed` names a type
+    /// that the already-configured [`Self::disallowed_types`] also names.
+    pub fn allowed_types(mut self, allowed: MessageTypeNames) -> Result<Self, SettingsError> {
+        crate::policy::check_disjoint("allowed_types", &allowed, &self.disallowed_types)?;
+        self.allowed_types = allowed;
+        Ok(self)
+    }
+
+    /// Sets [`Self::disallowed_types`].
+    ///
+    /// # Errors
+    ///
+    /// As above, with `key = "disallowed_types"`.
+    pub fn disallowed_types(mut self, disallowed: MessageTypeNames) -> Result<Self, SettingsError> {
+        crate::policy::check_disjoint("disallowed_types", &self.allowed_types, &disallowed)?;
+        self.disallowed_types = disallowed;
+        Ok(self)
+    }
+}
+
+/// A validated list of message-type **names** (`"orders.created"`), never `Display` forms
+/// (`"orders.created.v1"`). Order is irrelevant; duplicates are tolerated.
+///
+/// One type serves both [`OutboxSettings::allowed_types`] and [`OutboxSettings::disallowed_types`]:
+/// the validation, the matching and the accessors are identical, and the two fields are set by two
+/// separately named methods, so a distinct newtype per field would guard against an argument swap
+/// that no signature makes possible (ADR 0033 Amendment B).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(into = "Vec<String>"))]
+pub struct MessageTypeNames(Vec<String>);
+
+impl MessageTypeNames {
+    /// The empty list. On [`OutboxSettings::allowed_types`] that means *every* type routes; on
+    /// [`OutboxSettings::disallowed_types`] it means *no* type is excluded. The neutral name is
+    /// deliberate — "all" is a property of the field, not of the list.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Parses a comma-separated list. Entries are trimmed; empty entries are dropped, so `""`
+    /// yields [`Self::empty`] and `"a,,b"` yields `[a, b]`.
+    ///
+    /// `field` is the field or environment-variable name reported in the error —
+    /// `"allowed_types"` or `"RELIAR_OUTBOX_ALLOWED_TYPES"`. It exists so the error names the
+    /// thing the operator has to edit (SRS §43.D13).
+    ///
+    /// # Errors
+    ///
+    /// [`SettingsError::Parse`] with `value_kind = "message type names without a version suffix"`
+    /// for an entry ending in `.v<digits>` — that is
+    /// [`MessageType`](reliar_core::MessageType)'s `Display` form, and matching is on the name
+    /// alone, so accepting it would silently match nothing (ADR 0033 §5). The offending value is
+    /// never echoed.
+    pub fn parse(field: &str, list: &str) -> Result<Self, SettingsError> {
+        let mut names = Vec::new();
+        for raw in list.split(',') {
+            let name = raw.trim();
+            if name.is_empty() {
+                continue;
+            }
+            names.push(name.to_string());
+        }
+        Self::validated(field, names)
+    }
+
+    /// Same validation, from any iterator of names. An entry that is empty after trimming is
+    /// [`SettingsError::Parse`] with `value_kind = "non-empty message type names"` — unlike
+    /// [`Self::parse`], which drops empties, an explicit empty name is a mistake worth reporting.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::parse`], plus the empty-name case.
+    pub fn try_from_iter<I, S>(field: &str, names: I) -> Result<Self, SettingsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut out = Vec::new();
+        for raw in names {
+            let name = raw.as_ref().trim();
+            if name.is_empty() {
+                return Err(SettingsError::parse(
+                    field.to_string(),
+                    "non-empty message type names",
+                ));
+            }
+            out.push(name.to_string());
+        }
+        Self::validated(field, out)
+    }
+
+    fn validated(field: &str, names: Vec<String>) -> Result<Self, SettingsError> {
+        for name in &names {
+            if is_versioned_message_type_name(name) {
+                return Err(SettingsError::parse(
+                    field.to_string(),
+                    "message type names without a version suffix",
+                ));
+            }
+        }
+        Ok(Self(names))
+    }
+
+    /// `true` when the list holds no names.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Exact, case-sensitive. `O(n)` over a list expected to hold a handful of names; allocates
+    /// nothing.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.iter().any(|n| n == name)
+    }
+
+    /// The configured names, for diagnostics.
+    #[must_use]
+    pub fn names(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<MessageTypeNames> for Vec<String> {
+    fn from(names: MessageTypeNames) -> Self {
+        names.0
+    }
+}
+
+/// `true` for a name ending in a [`MessageType`](reliar_core::MessageType) `Display` version
+/// suffix (`.v<digits>`) — matching happens by name alone, so accepting one would silently match
+/// nothing (ADR 0033 §5).
+fn is_versioned_message_type_name(name: &str) -> bool {
+    match name.rsplit_once(".v") {
+        Some((_, suffix)) => !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// Deserialize-side shape for [`OutboxSettings`] (feature `serde`): validation is not bypassable
+/// through a config file, so deserializing goes through this repr and [`OutboxSettings`]'s
+/// [`TryFrom`] impl rather than a direct derive.
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutboxSettingsRepr {
+    #[serde(default)]
+    dispatcher: DispatcherSettings,
+    #[serde(default)]
+    retention: RetentionSettings,
+    #[serde(default = "default_enabled_true")]
+    enabled: bool,
+    #[serde(default)]
+    allowed_types: Vec<String>,
+    #[serde(default)]
+    disallowed_types: Vec<String>,
+}
+
+#[cfg(feature = "serde")]
+const fn default_enabled_true() -> bool {
+    true
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<OutboxSettingsRepr> for OutboxSettings {
+    type Error = SettingsError;
+
+    fn try_from(repr: OutboxSettingsRepr) -> Result<Self, Self::Error> {
+        let allowed_types = MessageTypeNames::try_from_iter("allowed_types", repr.allowed_types)?;
+        let disallowed_types =
+            MessageTypeNames::try_from_iter("disallowed_types", repr.disallowed_types)?;
+        crate::policy::check_disjoint("disallowed_types", &allowed_types, &disallowed_types)?;
+        Ok(Self {
+            dispatcher: repr.dispatcher,
+            retention: repr.retention,
+            enabled: repr.enabled,
+            allowed_types,
+            disallowed_types,
+        })
     }
 }
 
@@ -324,6 +554,9 @@ impl OutboxSettings {
     pub fn from_env(prefix: &str) -> Result<Self, SettingsError> {
         let mut dispatcher = DispatcherSettings::default();
         let mut retention = RetentionSettings::default();
+        let mut enabled = true;
+        let mut allowed_types = MessageTypeNames::empty();
+        let mut disallowed_types = MessageTypeNames::empty();
 
         if let Some(v) = env_u32(prefix, "BATCH_SIZE")? {
             dispatcher.batch_size = v;
@@ -381,9 +614,27 @@ impl OutboxSettings {
             retention.purge_batch_size = v;
         }
 
+        if let Some(v) = env_bool(prefix, "ENABLED")? {
+            enabled = v;
+        }
+        if let Some(raw) = env_raw(prefix, "ALLOWED_TYPES")? {
+            allowed_types = MessageTypeNames::parse(&format!("{prefix}ALLOWED_TYPES"), &raw)?;
+        }
+        if let Some(raw) = env_raw(prefix, "DISALLOWED_TYPES")? {
+            disallowed_types = MessageTypeNames::parse(&format!("{prefix}DISALLOWED_TYPES"), &raw)?;
+        }
+        crate::policy::check_disjoint(
+            &format!("{prefix}DISALLOWED_TYPES"),
+            &allowed_types,
+            &disallowed_types,
+        )?;
+
         Ok(Self {
             dispatcher,
             retention,
+            enabled,
+            allowed_types,
+            disallowed_types,
         })
     }
 }
@@ -407,6 +658,20 @@ fn env_u32(prefix: &str, suffix: &str) -> Result<Option<u32>, SettingsError> {
         .parse::<u32>()
         .map(Some)
         .map_err(|_| SettingsError::parse(format!("{prefix}{suffix}"), "u32"))
+}
+
+fn env_bool(prefix: &str, suffix: &str) -> Result<Option<bool>, SettingsError> {
+    let Some(raw) = env_raw(prefix, suffix)? else {
+        return Ok(None);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" => Ok(Some(true)),
+        "false" | "0" => Ok(Some(false)),
+        _ => Err(SettingsError::parse(
+            format!("{prefix}{suffix}"),
+            "a boolean (\"true\" or \"false\")",
+        )),
+    }
 }
 
 fn env_usize(prefix: &str, suffix: &str) -> Result<Option<usize>, SettingsError> {

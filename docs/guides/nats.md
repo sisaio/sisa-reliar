@@ -6,6 +6,59 @@ the subject, and `NatsPublisher` publishes through `JetStream`, awaiting the ser
 returning `Ok`. See `docs/architecture/phase2-contract.md` for the frozen signatures this guide
 describes, and `crates/reliar-transport-nats/README.md` for the crate's own quickstart.
 
+## Standalone use — `reliar-core` + `reliar-transport-nats` only
+
+The transport is a complete, self-contained publisher. It depends on `reliar-core` and nothing else
+in Reliar — not `reliar-outbox`, not `reliar-store-postgres` — in any dependency kind, and CI's
+purity job fails the build if that ever changes (ADR 0032, SRS §18, §43.C C13). You can serialize
+an `Envelope` and publish it to JetStream with two crates:
+
+```toml
+[dependencies]
+reliar-core = { version = "0.2", features = ["json"] }
+reliar-transport-nats = "0.1"
+async-nats = "0.50"
+```
+
+```rust,no_run
+use reliar_core::{Envelope, JsonSerializer, Message, Publisher, Serializer};
+use reliar_transport_nats::{NatsPublisher, NatsSettings};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OrderCreated { order_id: u64 }
+impl Message for OrderCreated {
+    const TYPE: &'static str = "orders.created";
+    const VERSION: u16 = 1;
+}
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = async_nats::connect(&std::env::var("NATS_URL")?).await?;   // the app owns the connection
+let js = async_nats::jetstream::new(client);                              // and the stream (ADR 0029)
+let publisher = NatsPublisher::new(js, NatsSettings::default().subject_prefix("app"))?;
+
+let envelope = Envelope::builder(OrderCreated { order_id: 42 }).build();
+let bytes = JsonSerializer.serialize(&envelope.body)?;                    // Envelope<T>'s body → Bytes
+let mut serialized = envelope.map_body(|_| bytes);                        // Envelope<T> → SerializedEnvelope
+serialized.metadata.delivery.content_type = JsonSerializer.content_type().clone();
+publisher.publish(&serialized).await?;                                    // returns after the JetStream ack
+# Ok(()) }
+```
+
+What you get without the outbox: the canonical header projection (`reliar-*`, W3C trace headers,
+custom headers verbatim, raw body), `Nats-Msg-Id` for JetStream duplicate suppression, an awaited
+ack, and per-variant transient/permanent classification on the error. What you do **not** get is
+the transactional guarantee: a direct `publish` happens when you call it, whether or not your
+database transaction commits. Add `reliar-outbox` + a store only when you need that (below).
+
+There is a middle path between the two: `OutboxPublisher` (`reliar-outbox`) takes the same
+`NatsPublisher` and a store, and decides **per message type** whether to stage durably or publish
+directly, per SRS §20.2's routing rule — the durability of the full outbox for the types that need
+it, the low-latency directness above for the ones that don't, behind one call site. See
+`docs/guides/outbox-routing.md`.
+
+The same is true on the receive side: `NatsEnvelopeMapper::decode` turns a NATS message back into a
+`SerializedEnvelope` with only `reliar-core` in scope — the Phase 3 consumer builds on exactly that.
+
 ## Stream ownership — always the application's or the operator's
 
 **`NatsPublisher` never connects, never creates a stream, and never inspects one.** It takes an

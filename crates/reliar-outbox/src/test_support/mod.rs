@@ -18,4 +18,4 @@ mod store;
 
 pub use metrics::RecordingMetrics;
 pub use publisher::{FakePublishError, PublishStep, RecordingPublisher, ScriptedPublisher};
-pub use store::{InMemoryOutboxStore, InMemoryStoreError};
+pub use store::{InMemoryOutboxStore, InMemoryStoreError, InMemoryTransaction};

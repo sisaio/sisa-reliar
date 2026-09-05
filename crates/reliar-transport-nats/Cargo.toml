@@ -1,6 +1,6 @@
 [package]
 name = "reliar-transport-nats"
-version = "0.1.0"
+version = "0.1.1"
 description = "NATS JetStream transport for Reliar: envelope↔header mapping, subject resolution, and an at-least-once Publisher."
 edition.workspace = true
 rust-version.workspace = true
@@ -35,6 +35,9 @@ tracing.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+# `JsonSerializer` for the README's "Standalone use" doctest only — the crate's own code needs no
+# serializer, so `json` stays off the main dependency (see the comment above).
+reliar-core = { workspace = true, features = ["json"] }
 proptest.workspace = true
 serde.workspace = true
 # `datetime!` for readable fixed instants in the round-trip proptest generator only.

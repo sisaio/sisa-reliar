@@ -6,6 +6,7 @@ use std::time::Duration;
 use reliar_core::{FailureKind, MessageType};
 
 use crate::metrics::OutboxMetrics;
+use crate::policy::RouteKind;
 use crate::store::DeadReason;
 
 /// Records every [`OutboxMetrics`] call for assertion. Each getter below has the same name as
@@ -29,6 +30,7 @@ struct Inner {
     oldest_pending_age: Option<Duration>,
     purged: Option<(u64, u64)>,
     publish_duration: Option<(Duration, MessageType)>,
+    routed: Vec<(RouteKind, MessageType)>,
 }
 
 impl RecordingMetrics {
@@ -93,6 +95,12 @@ impl RecordingMetrics {
     pub fn publish_duration(&self) -> Option<(Duration, MessageType)> {
         self.lock().publish_duration.clone()
     }
+
+    /// One `(route, message_type)` entry per [`OutboxMetrics::routed`] call, in call order.
+    #[must_use]
+    pub fn routed(&self) -> Vec<(RouteKind, MessageType)> {
+        self.lock().routed.clone()
+    }
 }
 
 impl OutboxMetrics for RecordingMetrics {
@@ -135,5 +143,9 @@ impl OutboxMetrics for RecordingMetrics {
 
     fn purged(&self, published: u64, dead: u64) {
         self.lock().purged = Some((published, dead));
+    }
+
+    fn routed(&self, route: RouteKind, message_type: &MessageType) {
+        self.lock().routed.push((route, message_type.clone()));
     }
 }
