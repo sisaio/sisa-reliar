@@ -48,6 +48,56 @@ can never hot-loop a row or park it in the future (ADR 0009).
 See `../../docs/architecture/outbox.md` for the full delivery-path walkthrough and
 `../../docs/architecture/phase1-contract.md` §3 for the frozen signatures.
 
+## Quickstart: `enqueue` vs `publish`
+
+`OutboxPublisher` is the application's handle to both guarantees. Which one a call site gets is
+chosen by which method it calls — nothing decides it at runtime (ADR 0036):
+
+```rust,no_run
+# use reliar_core::{ContentType, Envelope, Message, Publisher as _, Serializer};
+# use reliar_outbox::{InMemoryOutboxStore, InMemoryTransaction, OutboxPublisher, RecordingPublisher};
+# #[derive(serde::Serialize, serde::Deserialize)]
+# struct OrderCreated;
+# impl Message for OrderCreated {
+#     const TYPE: &'static str = "orders.created";
+#     const VERSION: u16 = 1;
+# }
+# struct RawJson;
+# impl Serializer for RawJson {
+#     type Error = serde_json::Error;
+#     fn content_type(&self) -> &ContentType { &ContentType::JSON }
+#     fn serialize<T: Message>(&self, body: &T) -> Result<bytes::Bytes, Self::Error> {
+#         serde_json::to_vec(body).map(bytes::Bytes::from)
+#     }
+#     fn deserialize<T: Message>(&self, bytes: &[u8]) -> Result<T, Self::Error> {
+#         serde_json::from_slice(bytes)
+#     }
+# }
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+let envelope = Envelope::builder(OrderCreated).build();
+let bytes = RawJson.serialize(&envelope.body)?;
+let mut serialized = envelope.map_body(|_| bytes);
+serialized.metadata.delivery.content_type = RawJson.content_type().clone();
+
+let outbox = OutboxPublisher::new(InMemoryOutboxStore::default(), RecordingPublisher::default());
+
+// enqueue: durable, at-least-once — visible only once the caller's own transaction commits, and
+// published later by an OutboxDispatcher.
+let mut tx = InMemoryTransaction;
+outbox.enqueue(&mut tx, &serialized).await?;
+
+// publish: bypasses the outbox entirely — sends now, one attempt, no Reliar guarantee at all.
+outbox.publish(&serialized).await?;
+# Ok(())
+# }
+```
+
+See `../../docs/guides/outbox-enqueue-and-publish.md` for the full guarantee comparison and the
+open-transaction warning around `publish`. An app that only ever needs the bypass path — no
+durability, no dispatcher — can skip this crate entirely and use a transport publisher (e.g.
+`reliar-transport-nats`'s `NatsPublisher`) directly against `reliar-core` alone.
+
 ## What this crate ships
 
 - The `OutboxStore`/`OutboxDeadLetters` traits and their request/result types (`AcquireRequest`,

@@ -11,6 +11,58 @@ workspace version; per-crate changelog files are not generated.
 
 ## [Unreleased]
 
+### Removed
+
+- **`reliar-outbox` 0.4.0** withdraws the routing rule shipped in 0.3.0 ([ADR
+  0036](docs/decisions/0036-outbox-enqueue-and-publisher-passthrough.md), superseding [ADR
+  0033](docs/decisions/0033-outbox-routing-publisher.md)): `OutboxPolicy` (module `policy`),
+  `RouteKind`, `ScopedOutboxPublisher`, `OutboxPublisher::in_transaction`/`publish_direct`/`policy`,
+  `RouteError`, `DirectPublishError`, `OutboxSettings::enabled`/`allowed_types`/`disallowed_types`
+  (fields + builder setters), `MessageTypeNames`, `OutboxMetrics::routed` and
+  `RecordingMetrics::routed()`, and the `RELIAR_OUTBOX_ENABLED`/`_ALLOWED_TYPES`/`_DISALLOWED_TYPES`
+  environment keys — none of it has a replacement, because the rule itself is withdrawn.
+- **`reliar-outbox` 0.4.0** also removes `OutboxStaging` (the trait, in module `staging`) and
+  `OutboxStaging::stage`, renamed to `OutboxEnqueue` (module `enqueue`) and `OutboxEnqueue::enqueue`
+  (decision #34, 2026-09-06) — see **Changed** below; shape, bounds and the abort-on-error
+  invariant carry over unchanged, only the names differ.
+
+### Changed
+
+- **`reliar-outbox` 0.4.0**: `OutboxPublisher` is now a `reliar_core::Publisher` in its own right
+  — its `publish`/`publish_batch` bypass the outbox entirely and forward to the transport
+  byte-identical, with no Reliar-side guarantee at all. `new`/`with_metrics` lose their policy
+  argument. `OutboxSettings` deserialization keeps `deny_unknown_fields`, so a document still
+  carrying `enabled`/`allowed_types`/`disallowed_types` now fails to load, naming the field.
+  The staging capability is renamed: `OutboxStaging` → `OutboxEnqueue` (module `staging` →
+  `enqueue`), and its method `stage` → `enqueue` (decision #34, 2026-09-06). Shape, bounds and the
+  abort-on-error invariant are unchanged.
+- **`reliar-store-postgres` 0.4.0** — follows `reliar-outbox` 0.4.0 (its `reliar-outbox`
+  requirement moves to `^0.4`). No schema, migration or `.sqlx/` change: the `OutboxEnqueue` impl
+  is unchanged behaviour, reached now through `OutboxPublisher::enqueue` rather than the withdrawn
+  `ScopedOutboxPublisher`; rustdoc retouched accordingly, including the `OutboxStaging` → `OutboxEnqueue` rename.
+
+### Added
+
+- **`reliar-outbox` 0.4.0** — `OutboxPublisher::enqueue`/`enqueue_batch`: enqueue a
+  `SerializedEnvelope` in the caller's own transaction through `OutboxEnqueue`, the durable,
+  at-least-once path published later by an `OutboxDispatcher`. `enqueue_batch` fails fast with
+  `EnqueueBatchError { index, source }` naming the first envelope that failed to enqueue. New
+  `OutboxMetrics::enqueued` hook and `reliar.outbox.enqueue`/`enqueue_batch` spans. **The call site
+  now names the guarantee**: `enqueue` for durability, `publish` to bypass the outbox — nothing
+  decides between them at runtime, and no setting can.
+  - **Migration (0.3 → 0.4):** `outbox.in_transaction(&mut tx).publish(&e).await?` →
+    `outbox.enqueue(&mut tx, &e).await?`; `outbox.publish_direct(&e).await?` →
+    `outbox.publish(&e).await?`; delete `RELIAR_OUTBOX_ENABLED`/`_ALLOWED_TYPES`/
+    `_DISALLOWED_TYPES` from every deployment and every config document (a document that keeps
+    them now fails to load); a message type you had disallowed is now a plain `publish` call site,
+    changed in code, not in configuration. A custom `OutboxStaging` implementation renames to
+    `OutboxEnqueue` (module `staging` → `enqueue`) and its `stage` method to `enqueue`.
+
+## 2026-09-05 — `reliar-outbox` 0.3.0 · `reliar-store-postgres` 0.3.0 · `reliar-transport-nats` 0.1.1
+
+The outbox routing rule (SRS §20.2, ADR 0033) — later withdrawn and replaced by the enqueue/publish
+rule recorded in *Unreleased* above (ADR 0036).
+
 ### Added
 
 - **`reliar-outbox` 0.3.0** — the outbox routing publisher (SRS §20.2, ADR 0033 incl. Amendment

@@ -1,6 +1,6 @@
 [package]
 name = "reliar-outbox"
-version = "0.3.0"
+version = "0.4.0"
 description = "Storage-agnostic transactional outbox: OutboxStore/Publisher contracts, retry policy, settings and dispatcher (no storage or transport dependency)."
 edition.workspace = true
 rust-version.workspace = true
@@ -17,9 +17,8 @@ workspace = true
 [features]
 default = []
 ## `serde` derive on the settings types (`OutboxSettings`, `DispatcherSettings`,
-## `RetentionSettings`), `deny_unknown_fields` on the repr with a per-field `#[serde(default)]`
-## (`enabled` defaults to `true` — no container-level `default`, so an absent `enabled` still
-## means "routing on"), durations as integer milliseconds.
+## `RetentionSettings`), `#[serde(default, deny_unknown_fields)]` directly on each, durations as
+## integer milliseconds.
 serde = ["dep:serde", "serde/std"]
 ## In-memory fakes (`InMemoryOutboxStore`, `RecordingPublisher`, `ScriptedPublisher`,
 ## `RecordingMetrics`) for provider crates, examples and this crate's own tests. `tokio` is now an

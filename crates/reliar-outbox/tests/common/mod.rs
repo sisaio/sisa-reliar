@@ -18,8 +18,8 @@ impl Message for OrderCreated {
     const VERSION: u16 = 1;
 }
 
-/// Three distinct message types for router selective-routing scenarios (§43.D3), where the rule
-/// must be exercised on more than one `MessageType` name in the same test.
+/// Three distinct message types for scenarios that need more than one `MessageType` name in the
+/// same test (e.g. `enqueue_batch` order preservation).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct TypeA;
 impl Message for TypeA {
@@ -62,9 +62,8 @@ impl Serializer for RawJson {
     }
 }
 
-/// A [`Serializer`] fixture whose `ContentType` is deliberately **not** JSON — the non-JSON
-/// fixture review round 2's M1 asks for: it proves [`crate::ScopedOutboxPublisher`]/
-/// [`reliar_outbox::OutboxPublisher::publish_direct`] persist/forward
+/// A [`Serializer`] fixture whose `ContentType` is deliberately **not** JSON — proves
+/// [`reliar_outbox::OutboxPublisher::enqueue`]/`publish` persist/forward
 /// `metadata.delivery.content_type` **verbatim** rather than merely happening to agree with a
 /// JSON default that every other fixture in this crate also produces.
 #[derive(Clone, Copy, Debug, Default)]
@@ -215,9 +214,9 @@ impl RecordingSubscriber {
             .with_ansi(false)
             .with_max_level(tracing::Level::TRACE)
             // `CLOSE` prints each span's name and recorded fields once it ends, even for a span
-            // that never logs an event of its own (`reliar.outbox.route`, §43.D/R13) — without
-            // this, a leak-free span with no event would leave nothing in the transcript to
-            // assert against.
+            // that never logs an event of its own (`reliar.outbox.enqueue`/`enqueue_batch`,
+            // §43.D) — without this, a leak-free span with no event would leave nothing in the
+            // transcript to assert against.
             .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
             .finish();
         let guard = tracing::subscriber::set_default(subscriber);

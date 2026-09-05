@@ -1,52 +1,33 @@
-//! The application's publisher when an outbox is in play: one `publish` call that either stages
-//! the message in the outbox or sends it straight to the transport, as its [`OutboxPolicy`]
-//! decides (SRS §20.2, ADR 0033 Amendment D).
+//! The application's outbox handle: [`OutboxPublisher::enqueue`] is the durable path,
+//! [`reliar_core::Publisher::publish`] bypasses the outbox entirely (ADR 0036).
 
 use core::fmt;
 
-use reliar_core::{Classify, FailureKind, MessageType, Publisher, SerializedEnvelope};
-use tokio::sync::Mutex;
+use reliar_core::{Publisher, SerializedEnvelope};
 use tracing::Instrument as _;
 
+use crate::enqueue::OutboxEnqueue;
 use crate::metrics::{NoopMetrics, OutboxMetrics};
-use crate::policy::{OutboxPolicy, RouteKind};
-use crate::staging::OutboxStaging;
 
-/// The application's publisher when an outbox is in play: one `publish` call that either stages
-/// the message in the outbox or sends it straight to the transport, as its [`OutboxPolicy`]
-/// decides.
+/// The application's outbox handle: **`enqueue` is the durable path; `publish` bypasses the
+/// outbox entirely** and forwards straight to the transport.
 ///
-/// Composition only — it holds a staging capability, a transport [`Publisher`], the rule, and a
-/// metrics sink. The rule itself lives in [`OutboxPolicy`] (ADR 0033 Amendment C): no `enabled`
-/// flag, no list and no branch of the routing table here. Preview a decision with
-/// [`Self::policy`].
+/// - [`Self::enqueue`] enqueues the envelope in the caller's own transaction. It becomes visible
+///   when the caller commits and is published later by an [`crate::OutboxDispatcher`]: durable,
+///   at-least-once, with the duplicate windows the crate docs list.
+/// - The [`reliar_core::Publisher`] impl sends **now**, through the transport publisher, one
+///   attempt, with no Reliar guarantee at all: no retry, no backoff, no dead state, no duplicate
+///   window, and no relationship to any transaction the caller may have open.
 ///
-/// # Publishing
-///
-/// The routed path needs the caller's transaction, and `Publisher::publish` has no parameter for
-/// one — so **the `Publisher` impl lives on [`ScopedOutboxPublisher`]**, which
-/// [`Self::in_transaction`] hands out for the life of a borrow:
-///
-/// ```text
-/// let published = outbox.in_transaction(&mut tx);   // impl reliar_core::Publisher
-/// published.publish(&serialized).await?;
-/// tx.commit().await?;
-/// ```
-///
-/// This type is deliberately **not** a [`reliar_core::Publisher`]: a `'static`, `Clone`-able
-/// `Publisher` here could be wired into an [`crate::OutboxDispatcher`], which would drain the
-/// outbox back into itself (ADR 0033 §4). For a call site with no transaction use
-/// [`Self::publish_direct`], which refuses routed types loudly.
-///
-/// The caller serializes: both routes carry the same [`SerializedEnvelope`] value, so the bytes
-/// on the wire cannot depend on the route (ADR 0033 Amendment D §3).
+/// The guarantee is chosen by which method the call site calls. Nothing decides it at runtime,
+/// and no setting can (ADR 0036).
 // Gated: the example below is only compilable with `test-support` (`InMemoryOutboxStore`,
 // `InMemoryTransaction`, `RecordingPublisher`) — without the feature it becomes `ignore` so
 // `cargo test -p reliar-outbox` (no `--all-features`) still compiles (review round 1, B1).
 #[cfg_attr(not(feature = "test-support"), doc = "```ignore")]
 #[cfg_attr(feature = "test-support", doc = "```")]
 /// # use reliar_core::{ContentType, Envelope, Message, Publisher as _, Serializer};
-/// # use reliar_outbox::{InMemoryOutboxStore, InMemoryTransaction, OutboxPolicy, OutboxPublisher, RecordingPublisher};
+/// # use reliar_outbox::{InMemoryOutboxStore, InMemoryTransaction, OutboxPublisher, RecordingPublisher};
 /// #
 /// # #[derive(serde::Serialize, serde::Deserialize)]
 /// # struct OrderCreated;
@@ -55,8 +36,8 @@ use crate::staging::OutboxStaging;
 /// #     const VERSION: u16 = 1;
 /// # }
 /// #
-/// // A minimal `Serializer` — `reliar-outbox` names no wire format of its own (ADR 0033 §13), and
-/// // holds none on this path: the caller serializes (Amendment D §3).
+/// // A minimal `Serializer` — `reliar-outbox` names no wire format of its own, and holds none on
+/// // this path: the caller serializes.
 /// # struct RawJson;
 /// # impl Serializer for RawJson {
 /// #     type Error = serde_json::Error;
@@ -71,36 +52,26 @@ use crate::staging::OutboxStaging;
 /// #
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// // The caller serializes once, exactly as it would for a bare `NatsPublisher` (§4.2).
+/// // The caller serializes once, exactly as it would for a bare `NatsPublisher`.
 /// let envelope = Envelope::builder(OrderCreated).build();
 /// let bytes = RawJson.serialize(&envelope.body)?;
 /// let mut serialized = envelope.map_body(|_| bytes);
 /// serialized.metadata.delivery.content_type = RawJson.content_type().clone();
 ///
-/// // Routed: an empty allow list means every type is durable (`OutboxPolicy::default()`).
-/// let outbox = OutboxPublisher::new(
-///     InMemoryOutboxStore::default(),
-///     RecordingPublisher::default(),
-///     OutboxPolicy::default(),
-/// );
-/// let mut tx = InMemoryTransaction;
-/// outbox.in_transaction(&mut tx).publish(&serialized).await?;
+/// let outbox = OutboxPublisher::new(InMemoryOutboxStore::default(), RecordingPublisher::default());
 ///
-/// // Direct: routing disabled — the same call now goes straight to the transport.
-/// let disabled = OutboxPolicy::from_settings(&reliar_outbox::OutboxSettings::default().enabled(false))?;
-/// let direct_outbox = OutboxPublisher::new(
-///     InMemoryOutboxStore::default(),
-///     RecordingPublisher::default(),
-///     disabled,
-/// );
-/// direct_outbox.publish_direct(&serialized).await?;
+/// // The durable path: enqueued in the caller's transaction.
+/// let mut tx = InMemoryTransaction;
+/// outbox.enqueue(&mut tx, &serialized).await?;
+///
+/// // The bypass path: straight to the transport, no transaction needed.
+/// outbox.publish(&serialized).await?;
 /// # Ok(())
 /// # }
 /// ```
 pub struct OutboxPublisher<S, P, M = NoopMetrics> {
-    staging: S,
+    store: S,
     publisher: P,
-    policy: OutboxPolicy,
     metrics: M,
 }
 
@@ -109,9 +80,8 @@ pub struct OutboxPublisher<S, P, M = NoopMetrics> {
 impl<S: Clone, P: Clone, M: Clone> Clone for OutboxPublisher<S, P, M> {
     fn clone(&self) -> Self {
         Self {
-            staging: self.staging.clone(),
+            store: self.store.clone(),
             publisher: self.publisher.clone(),
-            policy: self.policy.clone(),
             metrics: self.metrics.clone(),
         }
     }
@@ -119,23 +89,7 @@ impl<S: Clone, P: Clone, M: Clone> Clone for OutboxPublisher<S, P, M> {
 
 impl<S, P, M> fmt::Debug for OutboxPublisher<S, P, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OutboxPublisher")
-            .field("policy", &self.policy)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<S, P, M> OutboxPublisher<S, P, M> {
-    /// The rule this publisher delegates to. Preview a decision with
-    /// `outbox.policy().decide(&message_type)`.
-    ///
-    /// The **only** rule-shaped accessor: no `route_for`/`enabled`/`allowed_types`/
-    /// `disallowed_types` delegation, because each would be a second public way to ask the same
-    /// question (ADR 0033 Amendment C). Unbounded — reading the policy needs none of
-    /// `S`/`P`/`M`'s trait bounds.
-    #[must_use]
-    pub const fn policy(&self) -> &OutboxPolicy {
-        &self.policy
+        f.debug_struct("OutboxPublisher").finish_non_exhaustive()
     }
 }
 
@@ -143,16 +97,11 @@ impl<S, P> OutboxPublisher<S, P>
 where
     P: Publisher,
 {
-    /// `staging` is normally the provider store, `publisher` the transport publisher, and
-    /// `policy` the rule — `OutboxPolicy::from_settings(&settings)?` from the one `OutboxSettings`
-    /// the host already built for its dispatcher.
-    ///
-    /// **Infallible**, because an `OutboxPolicy` that exists is already valid (§2.5).
-    pub fn new(staging: S, publisher: P, policy: OutboxPolicy) -> Self {
+    /// `store` is normally the provider store, `publisher` the transport publisher.
+    pub fn new(store: S, publisher: P) -> Self {
         Self {
-            staging,
+            store,
             publisher,
-            policy,
             metrics: NoopMetrics,
         }
     }
@@ -163,74 +112,113 @@ where
     P: Publisher,
     M: OutboxMetrics,
 {
-    /// As [`Self::new`], with a metrics sink (§9).
-    pub fn with_metrics(staging: S, publisher: P, policy: OutboxPolicy, metrics: M) -> Self {
+    /// As [`Self::new`], with a metrics sink.
+    pub fn with_metrics(store: S, publisher: P, metrics: M) -> Self {
         Self {
-            staging,
+            store,
             publisher,
-            policy,
             metrics,
         }
     }
+}
 
-    /// Borrows `tx` and returns a [`reliar_core::Publisher`] that stages routed types in it and
-    /// forwards direct types to the transport.
+impl<S, P, M> OutboxPublisher<S, P, M>
+where
+    M: OutboxMetrics,
+{
+    /// Enqueues `envelope` in the caller's transaction `tx` — **the durable path**.
     ///
-    /// The returned value borrows both `self` and `tx` — it is neither `'static` nor `Clone`, so
-    /// it cannot be handed to an [`crate::OutboxDispatcher`] (that is the guard, and the compiler
-    /// enforces it). Dropping it **neither commits nor rolls back**: the caller owns the
-    /// transaction throughout.
+    /// Atomic with whatever else the caller writes in `tx`: the message exists if and only if the
+    /// transaction commits. An [`crate::OutboxDispatcher`] publishes it afterwards with the
+    /// crate's at-least-once guarantee (SRS §22).
     ///
-    /// For a single publish, the one-expression form keeps the borrow to one statement:
-    /// `outbox.in_transaction(&mut tx).publish(&serialized).await?`.
-    #[must_use]
-    pub fn in_transaction<'a, Tx>(
-        &'a self,
-        tx: &'a mut Tx,
-    ) -> ScopedOutboxPublisher<'a, S, P, Tx, M>
-    where
-        S: OutboxStaging<Tx>,
-        Tx: Send,
-    {
-        ScopedOutboxPublisher {
-            owner: self,
-            tx: Mutex::new(tx),
-        }
-    }
-
-    /// Publishes from a call site that has **no** transaction.
+    /// The transaction is required **by type**: there is no transaction-less enqueue call, so a
+    /// message cannot be enqueued outside the caller's unit of work.
     ///
-    /// Only the direct path is reachable. A type the rule routes through the outbox returns
-    /// [`DirectPublishError::TransactionRequired`] — this method **never** falls back to a direct
-    /// publish, because that would silently cancel the durability the operator configured. It is
-    /// one attempt with no Reliar-side retry, backoff, dead state or duplicate window.
+    /// Issues no network I/O beyond the provider's own statement, never retries, never sleeps,
+    /// and never commits, rolls back or otherwise consumes `tx` — the caller owns it throughout.
+    ///
+    /// Persists `envelope.metadata.delivery.content_type` verbatim: the caller serialized the
+    /// body and is authoritative about its content type (SRS §12).
     ///
     /// # Errors
     ///
-    /// [`DirectPublishError::TransactionRequired`], [`DirectPublishError::Publish`].
-    pub async fn publish_direct(
+    /// The provider's enqueue error, unwrapped. **An `Err` MAY leave `tx` unusable**, and whether
+    /// it does is the provider's contract ([`OutboxEnqueue::enqueue`]). The portable rule is: treat
+    /// any enqueue error as *abort this transaction* — issue no further statement on `tx`, roll it
+    /// back, and consider every earlier write in it lost. With `reliar-store-postgres` the
+    /// transaction **is** aborted.
+    pub async fn enqueue<Tx>(
         &self,
+        tx: &mut Tx,
         envelope: &SerializedEnvelope,
-    ) -> Result<(), DirectPublishError<P::Error>> {
+    ) -> Result<(), <S as OutboxEnqueue<Tx>>::Error>
+    where
+        S: OutboxEnqueue<Tx>,
+        Tx: Send,
+    {
+        self.enqueue_one(tx, envelope).await
+    }
+
+    /// Enqueues `envelopes` in `tx`, in order, one statement each — **the durable path**, batched.
+    ///
+    /// Sequential and order-preserving. **Fails fast**: the first enqueue failure returns, naming
+    /// the position in `envelopes` that failed, and the remaining envelopes are not attempted.
+    ///
+    /// This returns one result for the whole batch rather than one per envelope on purpose. Every
+    /// row lands in the same transaction, so the batch has a single outcome — the caller's
+    /// `commit` — and an enqueue failure typically aborts that transaction, voiding every row
+    /// enqueued before it. A positional `Ok` would not mean the message is durable (ADR 0036 §5).
+    ///
+    /// An empty slice is `Ok(())` and issues no statement.
+    ///
+    /// # Errors
+    ///
+    /// [`EnqueueBatchError`], carrying the failing index and the provider's error. The same
+    /// "treat it as *abort this transaction*" rule as [`Self::enqueue`] applies.
+    pub async fn enqueue_batch<Tx>(
+        &self,
+        tx: &mut Tx,
+        envelopes: &[SerializedEnvelope],
+    ) -> Result<(), EnqueueBatchError<<S as OutboxEnqueue<Tx>>::Error>>
+    where
+        S: OutboxEnqueue<Tx>,
+        Tx: Send,
+    {
+        let span =
+            tracing::debug_span!("reliar.outbox.enqueue_batch", batch.size = envelopes.len());
+        async {
+            for (index, envelope) in envelopes.iter().enumerate() {
+                self.enqueue_one(tx, envelope)
+                    .await
+                    .map_err(|source| EnqueueBatchError { index, source })?;
+            }
+            Ok(())
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// The one place that enqueues a row and records its span/metric — shared by
+    /// [`Self::enqueue`] and [`Self::enqueue_batch`] so the two can never drift and each envelope
+    /// gets its own span even inside a batch.
+    async fn enqueue_one<Tx>(
+        &self,
+        tx: &mut Tx,
+        envelope: &SerializedEnvelope,
+    ) -> Result<(), <S as OutboxEnqueue<Tx>>::Error>
+    where
+        S: OutboxEnqueue<Tx>,
+        Tx: Send,
+    {
         let span = tracing::debug_span!(
-            "reliar.outbox.route",
+            "reliar.outbox.enqueue",
             message.id = %envelope.id,
             message.type = %envelope.message_type,
-            route = tracing::field::Empty,
         );
         async {
-            let route = self.policy.decide(&envelope.message_type);
-            tracing::Span::current().record("route", route.as_str());
-            if route.is_outbox() {
-                return Err(DirectPublishError::TransactionRequired {
-                    message_type: envelope.message_type.clone(),
-                });
-            }
-            self.publisher
-                .publish(envelope)
-                .await
-                .map_err(DirectPublishError::Publish)?;
-            self.metrics.routed(route, &envelope.message_type);
+            self.store.enqueue(tx, envelope).await?;
+            self.metrics.enqueued(1, &envelope.message_type);
             Ok(())
         }
         .instrument(span)
@@ -238,228 +226,78 @@ where
     }
 }
 
-/// An [`OutboxPublisher`] scoped to one borrowed transaction — and a full
-/// [`reliar_core::Publisher`] for the life of that borrow.
+/// **Bypasses the outbox.** Forwards to the transport publisher, byte-identical, with no Reliar
+/// durability: one attempt, no retry, no backoff, no dead state, no duplicate window, and no
+/// relationship to any transaction the caller has open — if the caller later rolls back, the
+/// message is already on the wire. Use [`OutboxPublisher::enqueue`] for the durable path.
 ///
-/// Returned by [`OutboxPublisher::in_transaction`]. "Scoped" is about the **borrow**, not about
-/// delivery: a direct-routed publish here is still **not** part of the caller's transaction (see
-/// the `Publisher` impl below).
-///
-/// Not `Clone`, not `'static`, and never made either: those are what stop it reaching an
-/// [`crate::OutboxDispatcher`] (ADR 0033 Amendment D §4). The guard is enforced by the compiler,
-/// not by convention — `OutboxDispatcher::run` requires `P: Publisher + Send + Sync + 'static`,
-/// and a value borrowed for the life of one transaction can never satisfy that (§43.D, R24).
-///
-// Gated exactly like `OutboxPublisher`'s own doctest (review round 1, B1): without
-// `test-support` this becomes `ignore` rather than a `compile_fail` that would pass for the
-// wrong reason (an unresolved `InMemoryOutboxStore` import, not the `'static` bound this test
-// exists to prove).
-#[cfg_attr(not(feature = "test-support"), doc = "```ignore")]
-#[cfg_attr(feature = "test-support", doc = "```compile_fail")]
-/// # use reliar_outbox::{
-/// #     InMemoryOutboxStore, InMemoryTransaction, OutboxDispatcher, OutboxPolicy, OutboxPublisher,
-/// #     RecordingPublisher,
-/// # };
-/// # use tokio_util::sync::CancellationToken;
-/// # #[tokio::main(flavor = "current_thread")]
-/// # async fn main() {
-/// let outbox = OutboxPublisher::new(
-///     InMemoryOutboxStore::default(),
-///     RecordingPublisher::default(),
-///     OutboxPolicy::default(),
-/// );
-/// let mut tx = InMemoryTransaction;
-/// let scoped = outbox.in_transaction(&mut tx);
-///
-/// // Does not compile: `scoped` borrows `tx` and `outbox` for a non-`'static` lifetime, so it
-/// // cannot satisfy `run`'s `P: 'static` bound — the same guard that stops a host from feeding
-/// // the outbox back into itself.
-/// let dispatcher = OutboxDispatcher::builder(InMemoryOutboxStore::default(), scoped)
-///     .build()
-///     .unwrap();
-/// dispatcher.run(CancellationToken::new()).await.unwrap();
-/// # }
-/// ```
-pub struct ScopedOutboxPublisher<'a, S, P, Tx, M = NoopMetrics> {
-    owner: &'a OutboxPublisher<S, P, M>,
-    tx: Mutex<&'a mut Tx>,
-}
-
-impl<S, P, Tx, M> fmt::Debug for ScopedOutboxPublisher<'_, S, P, Tx, M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Never locks `self.tx`: a `Debug` impl must never block, and the policy is all there is
-        // worth printing anyway.
-        f.debug_struct("ScopedOutboxPublisher")
-            .field("policy", &self.owner.policy)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<S, P, Tx, M> Publisher for ScopedOutboxPublisher<'_, S, P, Tx, M>
+/// The enqueue capability is **never** touched here. That is what makes wiring an
+/// `OutboxPublisher` into an [`crate::OutboxDispatcher`] safe (ADR 0036 §2): there is no code
+/// path from a publish back into the store, so the outbox cannot drain into itself.
+impl<S, P, M> Publisher for OutboxPublisher<S, P, M>
 where
-    S: OutboxStaging<Tx>,
+    S: Send + Sync,
     P: Publisher,
-    Tx: Send,
     M: OutboxMetrics,
 {
-    /// Routed and direct failures in one enum; `Classify` forwards to whichever occurred (§5).
-    type Error = RouteError<<S as OutboxStaging<Tx>>::Error, P::Error>;
+    /// Transparent: the transport publisher's own error, unwrapped. `Classify`, `source()` and
+    /// `Display` are the transport's (ADR 0036 §3).
+    type Error = P::Error;
 
-    /// Publishes `envelope` by the rule.
-    ///
-    /// - **Routed** → `staging.stage(tx, …)` in the borrowed transaction. The message becomes
-    ///   visible when the caller commits and is published later by an
-    ///   [`crate::OutboxDispatcher`]: durable, at-least-once, with the documented duplicate
-    ///   windows.
-    /// - **Direct** → the transport publisher, **immediately**. The transaction is not touched —
-    ///   no statement is issued on it — and this publish is **not part of it**: if the caller
-    ///   later rolls back, the message is already on the wire. One attempt, no Reliar-side retry,
-    ///   backoff, dead state or duplicate window.
-    ///
-    /// A direct publish here runs while the caller's transaction is open — network I/O holding a
-    /// database transaction. Configure a publisher-side timeout, and prefer publishing
-    /// direct-routed types before opening (or after committing) the transaction.
-    ///
-    /// The transaction borrow is held only for the duration of a **staging** call
-    /// (`tx.lock().await` around `staging.stage(..)`): concurrent routed publishes on one scoped
-    /// value serialize on that lock, because a transaction is not a concurrency point. A direct
-    /// publish never takes the lock, so concurrent direct publishes run in parallel, bounded only
-    /// by whatever concurrency `P: Publisher` itself allows.
-    ///
-    /// # Errors
-    ///
-    /// [`RouteError::Stage`] — whether `tx` is still usable after this is the **provider's**
-    /// contract, not this crate's: [`OutboxStaging::stage`] promises only that a failure has
-    /// "typically" aborted it. With `reliar-store-postgres`, a failed statement always leaves the
-    /// transaction in an aborted state, so `commit` rolls back and every earlier `Ok` in the same
-    /// transaction is lost — check a different provider's own docs for its behavior.
-    /// [`RouteError::Publish`] — a transport failure never touches the transaction; it stays
-    /// committable regardless of provider.
-    ///
-    /// [`Self::publish_batch`] is the inherited default: results stay positional, one per
-    /// envelope, in order. A positional `Ok` on a routed entry means *the statement was
-    /// accepted*, **not** that the message is durable — durability is the caller's `commit`. With
-    /// `reliar-store-postgres`, one `Err(RouteError::Stage(_))` aborts the whole transaction,
-    /// invalidating every `Ok` before it. An `Err(RouteError::Publish(_))` is provider-independent:
-    /// a direct publish never issues a statement on the transaction, so it neither aborts it nor
-    /// invalidates any earlier `Ok` — the staged entries before and after it remain valid if the
-    /// caller commits.
+    /// **Bypasses the outbox.** Sends `envelope` now, through the transport publisher, in one
+    /// attempt: no retry, no backoff, no dead state, no duplicate window, and no relationship to
+    /// any transaction the caller has open. This method's own doc is required — without it,
+    /// rustdoc renders [`reliar_core::Publisher::publish`]'s "retry is the dispatcher's job" text
+    /// here, which is false for this impl (review round 1, B1). Use [`Self::enqueue`] for the
+    /// durable path.
     fn publish(
         &self,
         envelope: &SerializedEnvelope,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        let span = tracing::debug_span!(
-            "reliar.outbox.route",
-            message.id = %envelope.id,
-            message.type = %envelope.message_type,
-            route = tracing::field::Empty,
-        );
-        async move {
-            // The only rule call in this crate.
-            let route = self.owner.policy.decide(&envelope.message_type);
-            tracing::Span::current().record("route", route.as_str());
-            match route {
-                RouteKind::Outbox => {
-                    let mut guard = self.tx.lock().await;
-                    self.owner
-                        .staging
-                        .stage(&mut **guard, envelope)
-                        .await
-                        .map_err(RouteError::Stage)?;
-                }
-                RouteKind::Direct => {
-                    self.owner
-                        .publisher
-                        .publish(envelope)
-                        .await
-                        .map_err(RouteError::Publish)?;
-                }
-            }
-            self.owner.metrics.routed(route, &envelope.message_type);
-            Ok(())
-        }
-        .instrument(span)
+        self.publisher.publish(envelope)
+    }
+
+    /// Forwarded to `P::publish_batch` rather than inherited, so a transport with a native batch
+    /// API keeps it. Results stay positional, one per envelope, in order — `P`'s contract,
+    /// unmodified.
+    fn publish_batch(
+        &self,
+        envelopes: &[SerializedEnvelope],
+    ) -> impl Future<Output = Vec<Result<(), Self::Error>>> + Send {
+        self.publisher.publish_batch(envelopes)
     }
 }
 
-/// Why a publish through a [`ScopedOutboxPublisher`] failed.
+/// Which envelope in an [`OutboxPublisher::enqueue_batch`] failed, and why.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum RouteError<S, P> {
-    /// The store rejected the staged row. The caller's transaction has typically been aborted.
-    Stage(S),
-    /// The transport rejected the direct publish. The caller's transaction is untouched.
-    Publish(P),
+pub struct EnqueueBatchError<E> {
+    /// The position in the `envelopes` slice that failed. Envelopes after it were not attempted.
+    pub index: usize,
+    /// The provider's enqueue error.
+    pub source: E,
 }
 
-impl<S: fmt::Display, P: fmt::Display> fmt::Display for RouteError<S, P> {
+impl<E: fmt::Display> fmt::Display for EnqueueBatchError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stage(err) => write!(f, "failed to stage the routed message: {err}"),
-            Self::Publish(err) => write!(f, "failed to publish the message directly: {err}"),
-        }
+        write!(
+            f,
+            "failed to enqueue the envelope at index {}: {}",
+            self.index, self.source
+        )
     }
 }
 
-impl<S, P> std::error::Error for RouteError<S, P>
-where
-    S: std::error::Error + 'static,
-    P: std::error::Error + 'static,
-{
+impl<E: std::error::Error + 'static> std::error::Error for EnqueueBatchError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Stage(err) => Some(err),
-            Self::Publish(err) => Some(err),
-        }
+        Some(&self.source)
     }
 }
 
-/// Forwards to whichever collaborator failed — required because [`ScopedOutboxPublisher`]'s
-/// `Publisher::Error` is this type, and `reliar_core::Publisher::Error: Classify`.
-impl<S: Classify, P: Classify> Classify for RouteError<S, P> {
-    fn kind(&self) -> FailureKind {
-        match self {
-            Self::Stage(err) => err.kind(),
-            Self::Publish(err) => err.kind(),
-        }
-    }
-}
-
-/// Why [`OutboxPublisher::publish_direct`] failed.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum DirectPublishError<P> {
-    /// The rule routes this type through the outbox, but the call site has no transaction. Use
-    /// [`OutboxPublisher::in_transaction`], or stop routing this type.
-    TransactionRequired {
-        /// The type that requires a transaction.
-        message_type: MessageType,
-    },
-    /// The transport rejected the publish.
-    Publish(P),
-}
-
-impl<P: fmt::Display> fmt::Display for DirectPublishError<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TransactionRequired { message_type } => write!(
-                f,
-                "message type {message_type} routes through the outbox, but no transaction was \
-                 supplied; call OutboxPublisher::in_transaction, or stop routing this type"
-            ),
-            Self::Publish(err) => write!(f, "failed to publish the message directly: {err}"),
-        }
-    }
-}
-
-impl<P> std::error::Error for DirectPublishError<P>
-where
-    P: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::TransactionRequired { .. } => None,
-            Self::Publish(err) => Some(err),
-        }
+/// Forwards to the enqueue error, so a host can classify a batch failure exactly as it classifies
+/// a single one. Free, because `OutboxEnqueue::Error: Classify` already.
+impl<E: reliar_core::Classify> reliar_core::Classify for EnqueueBatchError<E> {
+    fn kind(&self) -> reliar_core::FailureKind {
+        self.source.kind()
     }
 }

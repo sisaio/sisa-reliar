@@ -1,10 +1,10 @@
-//! Reference integration (SRS §20.1): an Axum handler that writes a business row and an outbox
-//! row in one `sqlx` transaction, a `PostgresOutboxStore` built once at startup, an
+//! Reference integration (SRS §20.1, §20.2): an Axum handler that writes a business row and an
+//! outbox row in one `sqlx` transaction, a `PostgresOutboxStore` built once at startup, an
 //! `OutboxDispatcher` whose `CancellationToken` is tied to the same graceful shutdown as the HTTP
-//! server, and the outbox routing publisher (SRS §20.2, ADR 0033 Amendment D) as the handler's
-//! call site: `OutboxPublisher::in_transaction(&mut tx).publish(&serialized)` rather than the
-//! store's own inherent `enqueue`, so this reference integration doubles as the
-//! `RELIAR_OUTBOX_*`-driven rollout shape's worked example.
+//! server, and `OutboxPublisher` as the handler's call site: `outbox.enqueue(&mut tx,
+//! &serialized)` — the durable path — rather than the store's own inherent `enqueue`. See
+//! `docs/guides/outbox-enqueue-and-publish.md` for when a call site instead wants
+//! `Publisher::publish`, the pass-through that bypasses the outbox entirely.
 //!
 //! ```sh
 //! export DATABASE_URL='postgres://user:pw@localhost/app?options=-c%20search_path%3Dreliar,public'
@@ -28,7 +28,7 @@ use reliar_core::{
     Classify, Envelope, FailureKind, JsonSerializer, Message, Publisher, SerializedEnvelope,
     Serializer as _,
 };
-use reliar_outbox::{OutboxDispatcher, OutboxPolicy, OutboxPublisher};
+use reliar_outbox::{OutboxDispatcher, OutboxPublisher};
 use reliar_store_postgres::{MigrateOptions, PostgresOutboxSettings, PostgresOutboxStore};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -50,8 +50,8 @@ impl Message for OrderCreated {
 struct AppState {
     pool: sqlx::PgPool,
     // Cheap to clone into `AppState`: `OutboxPublisher` wraps a `PostgresOutboxStore` (a `PgPool`
-    // plus an `Arc<Ser>`), a `StdoutPublisher` and an `OutboxPolicy` — no outer `Arc` required
-    // (routing-publisher contract §4).
+    // plus an `Arc<Ser>`) and a `StdoutPublisher` — no outer `Arc` required (outbox-publisher
+    // contract §2).
     outbox: OutboxPublisher<PostgresOutboxStore<JsonSerializer>, StdoutPublisher>,
 }
 
@@ -132,25 +132,18 @@ async fn create_order(
     .build();
 
     // The caller serializes once, exactly as it would for a bare `Publisher` with no outbox in
-    // play (routing-publisher contract §4.2, ADR 0033 Amendment D §3) — `OutboxPublisher` holds
-    // no `Serializer` of its own.
+    // play (outbox-publisher contract §2.1) — `OutboxPublisher` holds no `Serializer` of its own.
     let ser = JsonSerializer;
     let bytes = ser.serialize(&envelope.body)?;
     let mut serialized = envelope.map_body(|_| bytes);
     serialized.metadata.delivery.content_type = ser.content_type().clone();
     let message_id = serialized.id;
 
-    // If the routing rule ever routed `orders.created` direct, this call would publish straight
-    // to the transport while `tx` (opened above, for the `orders` insert and a routed publish) is
-    // still open — not atomic with it, and not undone by a later rollback. Because this handler's
-    // transaction exists for the outbox insert too, a direct-routed type still has to be published
-    // inside it here; a handler whose *only* reason to hold a transaction is the outbox should
-    // instead publish direct-routed types before `begin` or after `commit`.
-    state
-        .outbox
-        .in_transaction(&mut tx)
-        .publish(&serialized)
-        .await?;
+    // The durable path: enqueued in this handler's own transaction, atomic with the `orders`
+    // insert above. A running `OutboxDispatcher` publishes it afterwards. A call site that wants
+    // to send immediately instead, with no Reliar durability at all, calls
+    // `Publisher::publish(&serialized)` — see `docs/guides/outbox-enqueue-and-publish.md`.
+    state.outbox.enqueue(&mut tx, &serialized).await?;
 
     tx.commit().await?;
 
@@ -224,18 +217,13 @@ async fn main() -> Result<()> {
         .await
         .context("connecting the outbox store (check search_path / migrate())")?;
 
-    // The same `OutboxSettings` feeds both the dispatcher's tuning and the routing rule (contract
-    // §2), entirely from the environment (SRS §7.2, §20.2) — nothing here is hard-coded, so
-    // `RELIAR_OUTBOX_ENABLED`/`_ALLOWED_TYPES`/`_DISALLOWED_TYPES` are the only way to change
-    // which orders stage durably and which publish directly.
+    // `OutboxSettings` feeds the dispatcher's tuning, entirely from the environment (SRS §7.2).
     let outbox_settings = reliar_outbox::OutboxSettings::from_env("RELIAR_OUTBOX_")
         .context("RELIAR_OUTBOX_* environment variables")?;
-    let policy = OutboxPolicy::from_settings(&outbox_settings)
-        .context("building the routing policy from RELIAR_OUTBOX_* settings")?;
     let dispatcher = OutboxDispatcher::builder(store.clone(), StdoutPublisher)
         .settings(outbox_settings.dispatcher)
         .build()?;
-    let outbox = OutboxPublisher::new(store.clone(), StdoutPublisher, policy);
+    let outbox = OutboxPublisher::new(store.clone(), StdoutPublisher);
 
     // One `CancellationToken` drives both Axum's graceful shutdown and the dispatcher's drain.
     let cancel = CancellationToken::new();

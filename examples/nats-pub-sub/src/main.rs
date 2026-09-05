@@ -1,8 +1,9 @@
-//! A minimal outbox → NATS `JetStream` pipeline: two typed messages, published through
-//! [`reliar_outbox::OutboxPublisher`], drained (the routed one) by `OutboxDispatcher`/`NatsPublisher`,
-//! and a Core NATS subscriber task that decodes what arrives with `NatsEnvelopeMapper` — the exact
-//! composition `docs/architecture/phase2-contract.md` §5 describes, plus the routing rule of SRS
-//! §20.2 (ADR 0033 Amendment D).
+//! A minimal outbox → NATS `JetStream` pipeline: two typed messages, one enqueued through
+//! [`reliar_outbox::OutboxPublisher::enqueue`] and drained by `OutboxDispatcher`/`NatsPublisher`,
+//! one sent through [`reliar_core::Publisher::publish`] (the pass-through that bypasses the
+//! outbox entirely, ADR 0036) — and a Core NATS subscriber task that decodes what arrives with
+//! `NatsEnvelopeMapper` — the exact composition `docs/architecture/phase2-contract.md` §5
+//! describes, plus the enqueue/publish rule of SRS §20.2.
 //!
 //! ```sh
 //! export DATABASE_URL='postgres://user:pw@localhost/app?options=-c%20search_path%3Dreliar,public'
@@ -10,19 +11,11 @@
 //! cargo run -p nats-pub-sub -- --migrate   # first run only — applies Reliar's migrations
 //! ```
 //!
-//! By default (no `RELIAR_OUTBOX_*` set) both messages route through the outbox — the durable
-//! default. Set `RELIAR_OUTBOX_DISALLOWED_TYPES=audit.logged` to see the second message publish
-//! **directly** instead, and print `route = direct`:
-//!
-//! ```sh
-//! RELIAR_OUTBOX_DISALLOWED_TYPES=audit.logged cargo run -p nats-pub-sub
-//! ```
-//!
-//! See `docs/guides/outbox-routing.md` for the rule, both rollout shapes and the direct path's
-//! guarantees, and `docs/guides/nats.md` for stream ownership, the `duplicate_window`, and subject
-//! strategy. This example creates its own stream explicitly, on every run: Reliar's
-//! `NatsPublisher` never connects and never creates one (ADR 0029) — that is always the
-//! application's or the operator's job, and here it is inline so `cargo run` stays self-contained.
+//! See `docs/guides/outbox-enqueue-and-publish.md` for the guarantee each call carries, and
+//! `docs/guides/nats.md` for stream ownership, the `duplicate_window`, and subject strategy. This
+//! example creates its own stream explicitly, on every run: Reliar's `NatsPublisher` never
+//! connects and never creates one (ADR 0029) — that is always the application's or the operator's
+//! job, and here it is inline so `cargo run` stays self-contained.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -33,9 +26,7 @@ use futures_util::StreamExt;
 use reliar_core::{
     Envelope, EnvelopeMapper, Message, Publisher as _, SerializedEnvelope, Serializer as _,
 };
-use reliar_outbox::{
-    DispatcherSettings, OutboxDispatcher, OutboxPolicy, OutboxPublisher, OutboxSettings,
-};
+use reliar_outbox::{DispatcherSettings, OutboxDispatcher, OutboxPublisher};
 use reliar_store_postgres::{MigrateOptions, PostgresOutboxSettings, PostgresOutboxStore};
 use reliar_transport_nats::{NatsEnvelopeMapper, NatsPublisher, NatsSettings, NatsWireMessage};
 use serde::{Deserialize, Serialize};
@@ -60,9 +51,8 @@ impl Message for OrderCreated {
     const VERSION: u16 = 1;
 }
 
-/// A second, distinct message type — this example's stand-in for the audit-style events a real
-/// deployment often routes **directly** (`RELIAR_OUTBOX_DISALLOWED_TYPES=audit.logged`) rather
-/// than staging them durably.
+/// A second, distinct message type — this example's stand-in for events a call site sends
+/// **directly**, with `Publisher::publish`, rather than enqueuing them durably.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AuditLogged {
     event: String,
@@ -73,9 +63,9 @@ impl Message for AuditLogged {
     const VERSION: u16 = 1;
 }
 
-/// The caller's own serialization block (contract §4.2, ADR 0033 Amendment D §3): nothing in
-/// `reliar-outbox` serializes on the [`OutboxPublisher`] path, so this example serializes once,
-/// exactly as it would for a bare `NatsPublisher`.
+/// The caller's own serialization block (outbox-publisher contract §2.1): nothing in
+/// `reliar-outbox` serializes on either the `enqueue` or the `publish` path, so this example
+/// serializes once, exactly as it would for a bare `NatsPublisher`.
 ///
 /// # Errors
 ///
@@ -93,9 +83,9 @@ fn serialize<T: Message>(envelope: Envelope<T>) -> Result<SerializedEnvelope> {
 #[tokio::main]
 #[allow(
     clippy::too_many_lines,
-    reason = "one ordered narrative — wiring, routing policy, both publishes, and the graceful \
-              shutdown — splitting it would scatter the ordering the example depends on across \
-              helper functions with no reuse"
+    reason = "one ordered narrative — wiring, both call sites, and the graceful shutdown — \
+              splitting it would scatter the ordering the example depends on across helper \
+              functions with no reuse"
 )]
 async fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt::try_init();
@@ -184,20 +174,7 @@ async fn main() -> Result<()> {
     )
     .context("building the publisher")?;
 
-    // The routing rule, entirely from the environment (SRS §7.2, §20.2; `docs/guides/outbox-routing.md`):
-    // nothing here is hard-coded, so `RELIAR_OUTBOX_ENABLED`/`_ALLOWED_TYPES`/`_DISALLOWED_TYPES`
-    // are the only way to change which messages stage durably and which publish directly.
-    let outbox_settings =
-        OutboxSettings::from_env("RELIAR_OUTBOX_").context("reading RELIAR_OUTBOX_* settings")?;
-    let policy = OutboxPolicy::from_settings(&outbox_settings)
-        .context("building the routing policy from RELIAR_OUTBOX_* settings")?;
-    println!(
-        "routing policy: enabled={} allowed_types={:?} disallowed_types={:?}",
-        policy.enabled(),
-        policy.allowed_types().names(),
-        policy.disallowed_types().names(),
-    );
-    let outbox = OutboxPublisher::new(store.clone(), publisher.clone(), policy);
+    let outbox = OutboxPublisher::new(store.clone(), publisher.clone());
 
     let dispatcher_settings = DispatcherSettings::default()
         .poll_interval(Duration::from_millis(50))
@@ -210,26 +187,22 @@ async fn main() -> Result<()> {
     let cancel = CancellationToken::new();
     let dispatcher_handle = tokio::spawn(dispatcher.run(cancel.clone()));
 
-    // One call each through the outbox — `in_transaction(&mut tx).publish(..)` reaches whichever
-    // path the policy above decided, so this same call site keeps working no matter how
-    // `RELIAR_OUTBOX_*` is set. The route is read from the policy directly (there is nothing else
-    // to preview it with, ADR 0033 Amendment C) before the publish that acts on it.
+    // The durable path: enqueued in this example's own transaction, atomic with whatever else it
+    // writes there. A running `OutboxDispatcher` (spawned above) publishes it afterwards, with
+    // at-least-once delivery.
     let order = serialize(Envelope::builder(OrderCreated { order_id: 1 }).build())
         .context("serializing the order")?;
-    let order_route = outbox.policy().decide(&order.message_type);
     let mut tx = pool.begin().await.context("begin transaction")?;
     outbox
-        .in_transaction(&mut tx)
-        .publish(&order)
+        .enqueue(&mut tx, &order)
         .await
-        .context("publish the order")?;
+        .context("enqueue the order")?;
     tx.commit().await.context("commit transaction")?;
-    println!(
-        "published {} (order 1) via route = {}",
-        order.id,
-        order_route.as_str()
-    );
+    println!("enqueued {} (order 1) — durable, at-least-once", order.id);
 
+    // The bypass path: sent now, through the transport publisher, one attempt — no retry, no
+    // backoff, no dead state, no duplicate window, and no relationship to any transaction. This
+    // call needs no `tx` at all: `publish` bypasses the outbox entirely (ADR 0036).
     let audit = serialize(
         Envelope::builder(AuditLogged {
             event: "signed_in".to_string(),
@@ -237,24 +210,13 @@ async fn main() -> Result<()> {
         .build(),
     )
     .context("serializing the audit event")?;
-    // Whichever way `audit.logged` routes (env-controlled, see the module doc above): if it goes
-    // direct, this publish is not atomic with the transaction opened just above it — the message
-    // reaches NATS immediately, and a later rollback would not undo it. A production call site
-    // that only opens the transaction for the outbox should publish direct-routed types before
-    // `begin` (or after `commit`) instead of wrapping them in one it does not need; this example
-    // keeps one call site for both routes on purpose, to show the same line works either way.
-    let audit_route = outbox.policy().decide(&audit.message_type);
-    let mut tx = pool.begin().await.context("begin transaction")?;
     outbox
-        .in_transaction(&mut tx)
         .publish(&audit)
         .await
         .context("publish the audit event")?;
-    tx.commit().await.context("commit transaction")?;
     println!(
-        "published {} (audit.logged) via route = {}",
-        audit.id,
-        audit_route.as_str()
+        "published {} (audit.logged) — one attempt, no Reliar guarantee",
+        audit.id
     );
 
     // Poll for "the subscriber received both messages" instead of guessing a fixed sleep,

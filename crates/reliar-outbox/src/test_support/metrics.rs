@@ -6,7 +6,6 @@ use std::time::Duration;
 use reliar_core::{FailureKind, MessageType};
 
 use crate::metrics::OutboxMetrics;
-use crate::policy::RouteKind;
 use crate::store::DeadReason;
 
 /// Records every [`OutboxMetrics`] call for assertion. Each getter below has the same name as
@@ -30,7 +29,7 @@ struct Inner {
     oldest_pending_age: Option<Duration>,
     purged: Option<(u64, u64)>,
     publish_duration: Option<(Duration, MessageType)>,
-    routed: Vec<(RouteKind, MessageType)>,
+    enqueued: Vec<MessageType>,
 }
 
 impl RecordingMetrics {
@@ -96,10 +95,12 @@ impl RecordingMetrics {
         self.lock().publish_duration.clone()
     }
 
-    /// One `(route, message_type)` entry per [`OutboxMetrics::routed`] call, in call order.
+    /// One entry per successfully enqueued envelope, in call order — one per
+    /// [`OutboxMetrics::enqueued`] call with `n = 1`, matching [`crate::OutboxPublisher::enqueue`]'s
+    /// call shape.
     #[must_use]
-    pub fn routed(&self) -> Vec<(RouteKind, MessageType)> {
-        self.lock().routed.clone()
+    pub fn enqueued(&self) -> Vec<MessageType> {
+        self.lock().enqueued.clone()
     }
 }
 
@@ -145,7 +146,10 @@ impl OutboxMetrics for RecordingMetrics {
         self.lock().purged = Some((published, dead));
     }
 
-    fn routed(&self, route: RouteKind, message_type: &MessageType) {
-        self.lock().routed.push((route, message_type.clone()));
+    fn enqueued(&self, n: usize, message_type: &MessageType) {
+        let mut guard = self.lock();
+        guard
+            .enqueued
+            .extend(std::iter::repeat_n(message_type.clone(), n));
     }
 }

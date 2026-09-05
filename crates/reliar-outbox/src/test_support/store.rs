@@ -8,8 +8,8 @@ use std::time::Duration;
 use reliar_core::{Classify, FailureKind, MessageId, SerializedEnvelope};
 use time::OffsetDateTime;
 
+use crate::enqueue::OutboxEnqueue;
 use crate::record::{OutboxRecord, truncate_error};
-use crate::staging::OutboxStaging;
 use crate::store::{
     AcquireRequest, AcquiredBatch, CompletedMessage, DeadLetterPage, DeadQuery, DeadReason,
     FailedMessage, FailureOutcome, MessageRef, OutboxDeadLetters, OutboxStats, OutboxStore,
@@ -206,14 +206,15 @@ impl InMemoryOutboxStore {
         self.lock().fail_next_complete = n;
     }
 
-    /// Makes the next `n` calls to [`OutboxStaging::stage`] fail with
-    /// [`InMemoryStoreError::Injected`] (`Transient`) — drives [`crate::ScopedOutboxPublisher`]'s
-    /// routed error path (SRS §43.D, R11) without touching any other `OutboxStore` method.
+    /// Makes the next `n` calls to [`OutboxEnqueue::enqueue`] fail with
+    /// [`InMemoryStoreError::Injected`] (`Transient`) — drives
+    /// [`crate::OutboxPublisher::enqueue`]'s error path (SRS §43.D) without touching any other
+    /// `OutboxStore` method.
     pub fn fail_next_enqueue(&self, n: usize) {
         self.lock().fail_next_enqueue = n;
     }
 
-    /// How many times [`OutboxStaging::stage`] has been called, whether it went on to fail an
+    /// How many times [`OutboxEnqueue::enqueue`] has been called, whether it went on to fail an
     /// injected failure or succeed.
     #[must_use]
     pub fn enqueue_call_count(&self) -> usize {
@@ -813,14 +814,14 @@ impl Classify for InMemoryStoreError {
 }
 
 /// A stand-in for a provider transaction in fake-driven tests: it carries no state, it exists so
-/// a test exercises the same `in_transaction(&mut tx)` shape a real host does.
+/// a test exercises the same `enqueue(&mut tx, ..)` shape a real host does.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InMemoryTransaction;
 
-impl OutboxStaging<InMemoryTransaction> for InMemoryOutboxStore {
+impl OutboxEnqueue<InMemoryTransaction> for InMemoryOutboxStore {
     type Error = InMemoryStoreError;
 
-    fn stage(
+    fn enqueue(
         &self,
         _tx: &mut InMemoryTransaction,
         envelope: &SerializedEnvelope,

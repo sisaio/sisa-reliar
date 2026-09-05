@@ -7,7 +7,7 @@ use bytes::Bytes;
 use reliar_core::{ContentType, Message, MessageId, SerializedEnvelope, Serializer};
 use reliar_outbox::{
     AcquiredBatch, CompletedMessage, DeadLetterPage, DeadQuery, FailedMessage, FailureOutcome,
-    MessageRef, OutboxDeadLetters, OutboxStaging, OutboxStats, OutboxStore, PoisonedRow,
+    MessageRef, OutboxDeadLetters, OutboxEnqueue, OutboxStats, OutboxStore, PoisonedRow,
     PurgeReport, PurgeRequest, WorkerId,
 };
 use sqlx::{PgPool, Postgres, Transaction};
@@ -228,7 +228,11 @@ impl<Ser: Serializer + Send + Sync + 'static> PostgresOutboxStore<Ser> {
         Ok(())
     }
 
-    /// Stages a message in the **application's own transaction** — atomicity is visible in the
+    /// The **typed path**: takes an `Envelope<T>` and serializes it with this store's configured
+    /// `Serializer` (contrast [`OutboxEnqueue::enqueue`] below, the already-serialized path
+    /// [`reliar_outbox::OutboxPublisher::enqueue`] calls).
+    ///
+    /// Enqueues a message in the **application's own transaction** — atomicity is visible in the
     /// signature. Plain `INSERT`, **no `ON CONFLICT`**: a reused `MessageId` aborts the
     /// caller's transaction rather than silently losing a message. Returns the id it wrote, so
     /// the caller can use it as the next message's `causation_id` in the same transaction.
@@ -264,7 +268,7 @@ impl<Ser: Serializer + Send + Sync + 'static> PostgresOutboxStore<Ser> {
             .serialize(&envelope.body)
             .map_err(|source| EnqueueError::Serialize { source })?;
 
-        insert_staged(
+        insert_enqueued(
             tx,
             &self.settings,
             envelope,
@@ -278,13 +282,13 @@ impl<Ser: Serializer + Send + Sync + 'static> PostgresOutboxStore<Ser> {
     }
 }
 
-/// Stages `payload` under `content_type`, running the schema's own `search_path` handling first
+/// Writes `payload` under `content_type`, running the schema's own `search_path` handling first
 /// (set it, when configured; restore only on success) — the shared half of
-/// [`PostgresOutboxStore::enqueue_with`] and the [`OutboxStaging`] impl below (review round 2,
+/// [`PostgresOutboxStore::enqueue_with`] and the [`OutboxEnqueue`] impl below (review round 2,
 /// m3): one implementation of the `search_path` dance, not two copies that could drift. A free
-/// function, not a method, so it carries no `Ser: 'static` bound — the [`OutboxStaging`] impl
+/// function, not a method, so it carries no `Ser: 'static` bound — the [`OutboxEnqueue`] impl
 /// deliberately drops that bound (review round 2, m4).
-async fn insert_staged<T>(
+async fn insert_enqueued<T>(
     tx: &mut Transaction<'_, Postgres>,
     settings: &PostgresOutboxSettings,
     envelope: &reliar_core::Envelope<T>,
@@ -316,7 +320,7 @@ async fn insert_staged<T>(
 /// Reads the caller's current `search_path`, sets it transaction-locally
 /// (`set_config(.., true)` — dies with the caller's `COMMIT`/`ROLLBACK`) to put `schema` first,
 /// and returns the previous value so it can be restored (contract §4). Returns the raw
-/// [`sqlx::Error`] — not [`EnqueueError`] — so `insert_staged` is the one place that maps it, for
+/// [`sqlx::Error`] — not [`EnqueueError`] — so `insert_enqueued` is the one place that maps it, for
 /// either caller (review round 2, m3).
 async fn set_search_path(
     tx: &mut Transaction<'_, Postgres>,
@@ -346,7 +350,7 @@ async fn restore_search_path(
 /// Generic over any envelope body `T` — `T::Message` is never needed here, only
 /// `envelope.message_type` (the promoted `message_type`/`message_version` columns), which every
 /// `Envelope<T>` carries regardless of `T`. That is what lets [`PostgresOutboxStore`]'s
-/// `OutboxStaging` impl (contract §6) call this with a [`SerializedEnvelope`] — a body that is
+/// `OutboxEnqueue` impl (contract §6) call this with a [`SerializedEnvelope`] — a body that is
 /// `Bytes`, not a `Message` — without a second, near-identical insert path.
 async fn insert_row<T>(
     tx: &mut Transaction<'_, Postgres>,
@@ -449,21 +453,24 @@ async fn insert_row<T>(
     Ok(())
 }
 
-/// The [`reliar_outbox::ScopedOutboxPublisher`] path (routing-publisher contract §6, ADR 0033
-/// Amendment D): stages an already-serialized envelope in the caller's own transaction, reusing
-/// `insert_staged`'s `search_path` handling and the shared `insert_row` helper.
+/// The [`reliar_outbox::OutboxPublisher::enqueue`] path (outbox-publisher contract §5, ADR 0036):
+/// enqueues an already-serialized envelope in the caller's own transaction, reusing
+/// `insert_enqueued`'s `search_path` handling and the shared `insert_row` helper.
 ///
 /// **No `'static` bound on `Ser`** (review round 2, m4) — this impl issues no statement through
 /// `self.serializer`, so it needs none of the bounds `enqueue`/`enqueue_with` do.
 ///
 /// **A single lifetime, `'c`, quantified by the impl.** With `&mut Tx` in the trait's own method
-/// signature (contract §3, Amendment D §2) the reborrow lifetime is quantified by the method
-/// itself, so the higher-ranked "implementation is not general enough" trap the pre-Amendment-D
-/// `OutboxEnqueueIn<&'a mut Transaction<'c, _>>` shape had — where an explicit, implied-looking
-/// `where 'c: 'a` bound broke every `tokio::spawn`/Axum call site — cannot arise here; there is no
-/// second lifetime to accidentally bound. R14a (which reproduced that trap) is superseded by
-/// `routing_enqueue::stage_is_a_publisher_and_its_future_is_send` in this crate's Postgres suite.
-impl<'c, Ser> OutboxStaging<Transaction<'c, Postgres>> for PostgresOutboxStore<Ser>
+/// signature the reborrow lifetime is quantified by the method itself, so the higher-ranked
+/// "implementation is not general enough" trap an earlier `OutboxEnqueueIn<&'a mut
+/// Transaction<'c, _>>` shape had — where an explicit, implied-looking `where 'c: 'a` bound broke
+/// every `tokio::spawn`/Axum call site — cannot arise here; there is no second lifetime to
+/// accidentally bound. That regression guard now lives as
+/// `outbox_publisher_enqueue::enqueue_is_a_publisher_and_its_future_is_send` in this crate's
+/// Postgres suite.
+///
+/// Renamed from `OutboxStaging`/`stage` in 0.4.0 (decision #34).
+impl<'c, Ser> OutboxEnqueue<Transaction<'c, Postgres>> for PostgresOutboxStore<Ser>
 where
     Ser: Serializer + Send + Sync,
 {
@@ -471,11 +478,13 @@ where
     /// error's serializer parameter is uninhabited ([`core::convert::Infallible`]).
     type Error = EnqueueError<core::convert::Infallible>;
 
+    /// The **`OutboxEnqueue` path**: takes an already-serialized envelope (contrast [`Self::enqueue`]
+    /// above, the typed path); what [`reliar_outbox::OutboxPublisher::enqueue`] calls.
+    ///
     /// Persists `envelope.metadata.delivery.content_type` **verbatim** — the caller's own content
     /// type, not [`Self::content_type`] (this store's configured serializer). This is the only
-    /// semantic difference from [`Self::enqueue`]/[`Self::enqueue_with`], and it is what lets
-    /// `ScopedOutboxPublisher`'s route-independent-bytes guarantee hold: the bytes an outbox row
-    /// and a direct publish carry never depend on which path a message took.
+    /// semantic difference from [`Self::enqueue`]/[`Self::enqueue_with`]: the caller already
+    /// serialized the body and is authoritative about its content type (SRS §12).
     ///
     /// No [`EnqueueOptions`]/`ordering_key` on this path (contract §6).
     ///
@@ -488,15 +497,15 @@ where
     ///
     /// Either variant leaves `tx` aborted: a failed statement puts the PostgreSQL transaction in
     /// the aborted state, so PostgreSQL rejects every subsequent statement on it, and every
-    /// earlier `stage` — and every other write — in that transaction is rolled back at commit.
-    async fn stage(
+    /// earlier `enqueue` — and every other write — in that transaction is rolled back at commit.
+    async fn enqueue(
         &self,
         tx: &mut Transaction<'c, Postgres>,
         envelope: &SerializedEnvelope,
     ) -> Result<MessageId, Self::Error> {
         let content_type = &envelope.metadata.delivery.content_type;
 
-        insert_staged(
+        insert_enqueued(
             tx,
             &self.settings,
             envelope,

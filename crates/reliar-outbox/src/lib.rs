@@ -3,11 +3,12 @@
 //! convenience), the request and result types that cross their boundary, a pure [`RetryPolicy`],
 //! the feature's [`OutboxSettings`], and the [`OutboxMetrics`] hook (SRS §19–§26).
 //!
-//! [`OutboxPolicy`] and [`OutboxPublisher`] add the routing rule of SRS §20.2: one publish call
-//! that either stages a message in the outbox or sends it straight to the transport, decided by
-//! [`OutboxSettings::enabled`]/`allowed_types`/`disallowed_types` (ADR 0033, Amendment D). The
-//! application-facing object **is** a [`Publisher`]: [`OutboxPublisher::in_transaction`] hands out
-//! a [`ScopedOutboxPublisher`] that implements it for the life of a borrowed transaction.
+//! [`OutboxPublisher`] is the application's outbox handle (ADR 0036): **the call site names the
+//! guarantee**. [`OutboxPublisher::enqueue`]/`enqueue_batch` enqueue a message in the caller's own
+//! transaction through [`OutboxEnqueue`] — durable, at-least-once, published later by an
+//! [`OutboxDispatcher`]. `OutboxPublisher` **is** also a [`Publisher`]: its `publish`/
+//! `publish_batch` bypass the outbox entirely and forward straight to the transport, with no
+//! Reliar-side guarantee at all. Nothing decides between the two at runtime, and no setting can.
 //!
 //! This slice ships the traits and types a provider builds against, a host configures, the
 //! [`OutboxDispatcher`] worker loop, and the `test-support` fakes a test drives without a
@@ -45,38 +46,36 @@
 //!   worker's clock skew can never hot-loop a row or park it in the future (ADR 0009).
 //! - **The library never reads the environment implicitly.** Only [`OutboxSettings::from_env`]
 //!   touches `std::env`, and only when called (ADR 0019).
-//! - **The routing rule's direct path carries none of the above.** A message
-//!   [`OutboxPolicy::decide`] routes [`RouteKind::Direct`] publishes with **no** Reliar-side
-//!   guarantee at all: one attempt, no retry, no backoff, no dead state, no duplicate window —
-//!   only as much retry as the transport publisher itself performs. Called inside an open
-//!   transaction, it publishes even if that transaction later rolls back (SRS §20.2, ADR 0033).
-//!   Documented in full on [`OutboxPublisher`].
+//! - **`publish` bypasses the outbox.** [`OutboxPublisher`]'s [`Publisher`] impl carries **none**
+//!   of the above: one attempt, no retry, no backoff, no dead state, no duplicate window — only
+//!   as much retry as the transport publisher itself performs, and no relationship to any
+//!   transaction the caller has open. Use [`OutboxPublisher::enqueue`] for the durable path
+//!   (SRS §20.2, ADR 0036). Documented in full on [`OutboxPublisher`].
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod dispatcher;
 mod duration_serde;
+mod enqueue;
 mod error;
 mod metrics;
 mod ordering;
-mod policy;
 mod publisher;
 mod record;
 mod retry;
 mod settings;
-mod staging;
 mod store;
 #[cfg(feature = "test-support")]
 mod test_support;
 mod worker;
 
 pub use dispatcher::{DefaultRetry, DispatchError, OutboxDispatcher, OutboxDispatcherBuilder};
+pub use enqueue::OutboxEnqueue;
 pub use error::ConfigError;
 pub use metrics::{NoopMetrics, OutboxMetrics};
 pub use ordering::Ordering;
-pub use policy::{OutboxPolicy, RouteKind};
-pub use publisher::{DirectPublishError, OutboxPublisher, RouteError, ScopedOutboxPublisher};
+pub use publisher::{EnqueueBatchError, OutboxPublisher};
 pub use record::{OutboxRecord, OutboxRecordBuilder};
 /// Re-exported from `reliar-core` (ADR 0032): a store author's or a publisher's `Classify`
 /// bound, a publish/store failure's `FailureKind`, the `Publisher` capability trait, and the
@@ -84,8 +83,7 @@ pub use record::{OutboxRecord, OutboxRecordBuilder};
 /// this re-export keeps existing `use reliar_outbox::{…}` imports one line.
 pub use reliar_core::{Classify, FailureKind, Publisher, SettingsError};
 pub use retry::{ExponentialBackoff, RetryPolicy};
-pub use settings::{DispatcherSettings, MessageTypeNames, OutboxSettings, RetentionSettings};
-pub use staging::OutboxStaging;
+pub use settings::{DispatcherSettings, OutboxSettings, RetentionSettings};
 pub use store::{
     AcquireRequest, AcquiredBatch, CompletedMessage, DeadLetterPage, DeadQuery, DeadReason,
     FailedMessage, FailureOutcome, MessageRef, OutboxDeadLetters, OutboxStats, OutboxStore,

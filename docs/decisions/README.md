@@ -68,9 +68,10 @@ it, especially for the areas SRS §45 protects.
 | [0030](0030-nats-publish-error-classification.md) | `NatsPublishError` classifies per variant and leaks nothing | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `max_payload = Some(0)` is a construction error · **B** the `Broker` `warn` logs the kind name, never the `async-nats` `Display`), corrected 2026-09-05 (the size guard saves no round-trip) | §17.1, §19.4, §23, §33 |
 | [0031](0031-nats-dependency-and-test-substrate.md) | The `async-nats` pin, its minimal features, and the NATS test substrate | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `tokio` is a runtime dependency; readiness is the JetStream retry loop) and 2026-09-05 (**B** the pin gate covers `tests/system`; §6 becomes a CI gate) | §7.1, §8.2, §40–§43 |
 | [0032](0032-publisher-and-shared-primitives-in-core.md) | `Publisher`, `Classify`, `FailureKind` and `SettingsError` belong to `reliar-core` | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** a `tokio` dev-dependency in `reliar-core` is inside this ADR) | §18, §19.4, §23, §36, §43.B |
-| [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxPolicy` (the rule) + `OutboxPublisher`/`ScopedOutboxPublisher` (composition, and a `reliar_core::Publisher`) + the `OutboxStaging<Tx>` capability | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** settings are top-level `OutboxSettings` fields, no `RoutingSettings` · **B** `allowed_types` + `disallowed_types`, disallow wins, an overlap is a `SettingsError` at construction · **C** the rule is its own type `OutboxPolicy` in module `policy`; the composition owns one and delegates · **D** the routing publisher **is** a `Publisher`: `OutboxRouter` → `OutboxPublisher` handing out a transaction-scoped `ScopedOutboxPublisher` that implements `reliar_core::Publisher`; the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` pair collapses into one `OutboxStaging<Tx>`; the caller serializes, so no `Serializer` here) | §7, §12, §18, §19.6, §20, §20.2, §22, §23, §31, §33, §36 |
+| [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxPolicy` (the rule) + `OutboxPublisher`/`ScopedOutboxPublisher` (composition, and a `reliar_core::Publisher`) + the `OutboxStaging<Tx>` capability | **Superseded by [0036](0036-outbox-enqueue-and-publisher-passthrough.md)** 2026-09-05 — the routing rule was withdrawn after it shipped in 0.3.0; only `OutboxStaging<Tx>` survives. Previously: **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** settings are top-level `OutboxSettings` fields, no `RoutingSettings` · **B** `allowed_types` + `disallowed_types`, disallow wins, an overlap is a `SettingsError` at construction · **C** the rule is its own type `OutboxPolicy` in module `policy`; the composition owns one and delegates · **D** the routing publisher **is** a `Publisher`: `OutboxRouter` → `OutboxPublisher` handing out a transaction-scoped `ScopedOutboxPublisher` that implements `reliar_core::Publisher`; the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` pair collapses into one `OutboxStaging<Tx>`; the caller serializes, so no `Serializer` here) | §7, §12, §18, §19.6, §20, §20.2, §22, §23, §31, §33, §36 |
 | [0034](0034-versioning-and-release-flow.md) | Independent per-crate versions, bumped in the change that breaks them; `release-plz` publishes rather than decides | Accepted 2026-09-05 | §7, §40, §44, §45 |
 | [0035](0035-coderabbit-is-advisory-pr-review.md) | CodeRabbit reviews every ready pull request into `main` against a committed `.coderabbit.yaml`, as advisory input only | Accepted 2026-09-05 | §38, §41 |
+| [0036](0036-outbox-enqueue-and-publisher-passthrough.md) | The call site names the guarantee: `OutboxPublisher::enqueue` in the caller's transaction + a pass-through `reliar_core::Publisher`; the routing rule is withdrawn (**supersedes 0033**) | **Amended** — accepted 2026-09-05, amended 2026-09-06 (**A** the write-side capability is `OutboxEnqueue<Tx>::enqueue`, renamed from `OutboxStaging::stage`, module `enqueue`; same shape, same invariants; merging it into `OutboxStore` weighed and rejected) | §7, §12, §18, §19.4, §19.6, §20, §20.2, §21, §22, §23, §33, §36 |
 
 ## Numbering note
 
@@ -134,7 +135,25 @@ collapses the capability pair into one `OutboxStaging<Tx>` taking `&mut Tx` — 
 holds no `Serializer` and both routes carry the same buffer). It lives in
 `reliar-outbox` because it is outbox mechanics under 0032's kind test; the caller's transaction
 reaches it as an opaque type parameter (`OutboxStaging<Tx>`), so no SQLx type enters the crate. Its
-frozen surface is `../architecture/routing-publisher-contract.md`.
+frozen surface was `../architecture/routing-publisher-contract.md`.
+
+**0036** (2026-09-05) **supersedes 0033** one day after it shipped: the human withdrew the routing
+rule because it let *configuration* decide a message's durability behind an identical call site —
+and, for a disallowed type, published to the broker inside the caller's open transaction. In its
+place, the call site names the guarantee: `OutboxPublisher::enqueue(&mut tx, &envelope)` is the
+durable path (written into the caller's transaction, at-least-once through the dispatcher) and
+`OutboxPublisher`'s `reliar_core::Publisher` impl forwards to the transport unconditionally, never
+touching the store — which is why wiring it into an `OutboxDispatcher` is now safe by construction
+rather than forbidden by a lifetime. `OutboxPolicy`, `RouteKind`, `ScopedOutboxPublisher`,
+`in_transaction`, `publish_direct`, `RouteError`, `DirectPublishError`, the three `OutboxSettings`
+fields and their environment keys are removed. The write-side capability 0033 shipped survives with
+its shape and its invariants intact but under a new name — **Amendment A** (2026-09-06, decision
+#34, card RELIAR-58): `OutboxStaging::stage` becomes **`OutboxEnqueue::enqueue`** in module
+`enqueue`, because "staging" was jargon and one durable path had two verbs; merging it into the
+published, worker-side `OutboxStore` was weighed and rejected (a `Tx` parameter or GAT on a bound
+the claim path never uses, one transaction type per store, and 0033's invariance trap reopened).
+`reliar-outbox` 0.4.0, `reliar-store-postgres` 0.4.0. Frozen surface:
+`../architecture/outbox-publisher-contract.md`.
 
 **0034** (2026-09-05) settles versioning and the release flow after the first Phase-2 release
 attempt failed: `reliar-core`'s public surface had changed (0032) while its version stayed at the
@@ -187,8 +206,8 @@ the clock split, facade timing) are specified in the SRS text and referenced fro
 |---|---|
 | a trait signature or bound | `../architecture/phase1-contract.md`, then 0001, 0008 |
 | whether an item belongs in `reliar-core` or a feature crate | 0032, then 0027 |
-| whether a message goes through the outbox or straight to the transport | 0033 (the rule is `OutboxPolicy` — Amendment C), then `../architecture/routing-publisher-contract.md` §2.5 |
-| which type implements `Publisher`, and why the un-scoped one must not | 0033 Amendment D §4, then `../architecture/routing-publisher-contract.md` §4, §4.1 |
+| whether a message goes through the outbox or straight to the transport | 0036 — the **call site** decides, never configuration; then `../architecture/outbox-publisher-contract.md` §2 |
+| `OutboxPublisher`'s `Publisher` impl, and why feeding the dispatcher is safe | 0036 §2, then `../architecture/outbox-publisher-contract.md` §2.2 |
 | the NATS mapping, subjects, or the publisher | `../architecture/phase2-contract.md`, then 0026–0030 |
 | the `async-nats` pin or the NATS test substrate | 0031, then 0021, 0022 |
 | the envelope, metadata, or headers | 0003, 0004, 0010, 0011, 0012 |

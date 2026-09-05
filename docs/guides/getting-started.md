@@ -77,8 +77,8 @@ consumer must tolerate.
 
 - **A real database:** `docs/guides/postgres.md` — schema, `search_path`, `migrate()`, the
   `examples/axum-outbox` reference integration.
-- **Skipping the outbox for some types:** `docs/guides/outbox-routing.md` — `OutboxPublisher`, the
-  `enabled`/`allowed_types`/`disallowed_types` rule, and what a direct publish costs you.
+- **Sending without the outbox:** `docs/guides/outbox-enqueue-and-publish.md` — `OutboxPublisher`'s
+  two operations, `enqueue` (durable) and `publish` (bypasses the outbox), and what each costs you.
 - **The guarantees:** `crates/reliar-outbox/README.md` states the duplicate windows and the
   no-ordering default plainly; read it before writing a consumer.
 - **The frozen contract:** `docs/architecture/phase1-contract.md` is authoritative over this guide

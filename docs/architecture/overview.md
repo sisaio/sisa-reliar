@@ -8,10 +8,11 @@ is no DI container, no ambient configuration, and nothing starts a thread on its
 - **Frozen Phase-1 API:** `phase1-contract.md`.
 - **Frozen Phase-2 API** (the NATS transport): `phase2-contract.md`. It adds one crate,
   `reliar-transport-nats` (→ `reliar-core`, plus `async-nats`).
-- **Frozen routing-publisher API** (v0.2): `routing-publisher-contract.md`, decided by ADR 0033
-  (incl. Amendment D). It adds no crate — `reliar-outbox` gains the `OutboxStaging<Tx>` capability
-  and `OutboxPublisher`/`ScopedOutboxPublisher` (the latter **is** a `reliar_core::Publisher`),
-  `reliar-store-postgres` gains one impl.
+- **Frozen outbox-publisher API** (v0.4): `outbox-publisher-contract.md`, decided by **ADR 0036**
+  (which supersedes ADR 0033 and its withdrawn `routing-publisher-contract.md`). It adds no crate —
+  `reliar-outbox` owns the `OutboxEnqueue<Tx>` capability and `OutboxPublisher`, whose `enqueue`
+  writes into the caller's transaction and whose `reliar_core::Publisher` impl forwards to the
+  transport without touching the store; `reliar-store-postgres` gains one impl.
 - **Amended 2026-09-05 by ADR 0032:** `Publisher`, `Classify`, `FailureKind` and `SettingsError`
   moved from `reliar-outbox` to `reliar-core`, signatures unchanged. Publication is a shared
   capability, not an outbox concept — so a transport (and, in Phase 3, `reliar-messaging`) depends
@@ -162,7 +163,7 @@ maintenance method on it. Reliar starts no timer other than the dispatcher's own
 | Envelope, metadata, headers, ids, serialization | `reliar-core` |
 | The `Publisher` contract, `Classify`/`FailureKind`, `SettingsError` | `reliar-core` (ADR 0032) |
 | `OutboxStore`, retry, dispatcher, outbox settings, metrics hook, fakes | `reliar-outbox` |
-| The routing rule (`OutboxPolicy`), the `OutboxPublisher`/`ScopedOutboxPublisher` composition | `reliar-outbox` (ADR 0033, Amendment D) |
+| `OutboxEnqueue<Tx>`, `OutboxPublisher` (`enqueue`/`enqueue_batch`, the `Publisher` pass-through) | `reliar-outbox` (ADR 0036) |
 | Schema, migrations, SQL, `enqueue`, `search_path` verification | `reliar-store-postgres` |
 | Transport headers, subject resolution, `JetStream` publish + ack | `reliar-transport-nats` |
 | The cross-provider outbox→NATS end-to-end proof | `tests/system` |

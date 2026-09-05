@@ -1,6 +1,15 @@
 # 0033 — The outbox routing publisher: `OutboxPublisher`, `OutboxStaging<Tx>`
 
-- **Status:** accepted (Amendment A, 2026-09-05 — settings naming; Amendment B, 2026-09-05 — allow +
+- **Status:** **Superseded by [0036](0036-outbox-enqueue-and-publisher-passthrough.md)
+  (2026-09-05).** The routing rule this record decided was withdrawn by the human one day after it
+  shipped in `reliar-outbox` 0.3.0 / `reliar-store-postgres` 0.3.0 — configuration deciding a
+  message's durability behind an identical call site. 0036 replaces it with two explicitly named
+  operations (`OutboxPublisher::enqueue` in the caller's transaction; a pass-through
+  `reliar_core::Publisher`). **Everything below is the record of what 0.3.0 shipped and is kept
+  verbatim; none of it describes 0.4.0 or later.** The one part that survives unchanged is
+  `OutboxStaging<Tx>` (§2, Amendment D §2). Because this record had shipped, it is superseded
+  rather than amended (`README.md`'s ship test).
+- **Superseded status at the time:** accepted (Amendment A, 2026-09-05 — settings naming; Amendment B, 2026-09-05 — allow +
   disallow lists; Amendment C, 2026-09-05 — the rule is its own type, `OutboxPolicy`; **Amendment D,
   2026-09-05 — the routing publisher *is* a `Publisher`: `OutboxRouter` → `OutboxPublisher` +
   `ScopedOutboxPublisher`, one staging trait, the caller serializes**)
@@ -10,7 +19,8 @@
 - **Related:** ADR 0001 (static dispatch), 0008 (`Publisher`), 0010 (`Serializer`), 0019 (settings +
   opt-in `from_env`), 0020 (metrics hook), 0027 (routing concepts are the transport's), 0032
   (`Publisher` in `reliar-core`, the §18 kind test)
-- **Contract:** `../architecture/routing-publisher-contract.md`
+- **Contract:** `../architecture/routing-publisher-contract.md` — **withdrawn**; the live
+  contract is `../architecture/outbox-publisher-contract.md` (ADR 0036).
 
 ## Context
 

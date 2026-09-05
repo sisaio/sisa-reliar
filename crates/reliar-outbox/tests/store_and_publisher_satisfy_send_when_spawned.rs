@@ -14,10 +14,11 @@ use std::fmt;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use reliar_core::MessageId;
+use reliar_core::{MessageId, SerializedEnvelope};
 use reliar_outbox::{
     AcquireRequest, AcquiredBatch, Classify, CompletedMessage, FailedMessage, FailureKind,
-    MessageRef, OutboxStats, OutboxStore, Publisher, PurgeReport, PurgeRequest, WorkerId,
+    MessageRef, OutboxEnqueue, OutboxPublisher, OutboxStats, OutboxStore, Publisher, PurgeReport,
+    PurgeRequest, WorkerId,
 };
 
 #[derive(Debug)]
@@ -121,6 +122,25 @@ impl Publisher for MinimalPublisher {
     }
 }
 
+/// A stand-in for a provider transaction — carries no state, exists only so
+/// [`OutboxPublisher::enqueue`] has a `Tx` to require by type.
+#[derive(Clone, Copy, Debug, Default)]
+struct MinimalTransaction;
+
+impl OutboxEnqueue<MinimalTransaction> for MinimalStore {
+    type Error = FakeError;
+
+    async fn enqueue(
+        &self,
+        _tx: &mut MinimalTransaction,
+        envelope: &SerializedEnvelope,
+    ) -> Result<MessageId, Self::Error> {
+        std::hint::black_box(envelope.id);
+        tokio::task::yield_now().await;
+        Ok(envelope.id)
+    }
+}
+
 fn assert_send<T: Send>(_: &T) {}
 
 #[tokio::test]
@@ -171,4 +191,35 @@ async fn publisher_calls_produce_send_futures_and_spawn_cleanly() {
     // reference — confirms the shared reference type is `Send` too, not just the futures.
     let message_ref = MessageRef::new(MessageId::new(), time::OffsetDateTime::now_utc());
     assert_send(&message_ref);
+}
+
+/// [`OutboxPublisher::publish`] and [`OutboxPublisher::enqueue`] both return `Send` futures, so a
+/// dispatcher can spawn `publish` and a host can hold `enqueue`'s future across an `.await` point
+/// inside a larger async fn (SRS §43.D, ADR 0036, E16).
+#[tokio::test]
+async fn outbox_publisher_publish_and_enqueue_futures_are_send() {
+    let outbox = std::sync::Arc::new(OutboxPublisher::new(
+        MinimalStore::default(),
+        MinimalPublisher,
+    ));
+    let envelope = std::sync::Arc::new(common::serialized_envelope());
+
+    let publish_future = outbox.publish(&envelope);
+    assert_send(&publish_future);
+    publish_future.await.expect("publish succeeds");
+
+    let mut tx = MinimalTransaction;
+    let enqueue_future = outbox.enqueue(&mut tx, &envelope);
+    assert_send(&enqueue_future);
+    enqueue_future.await.expect("enqueue succeeds");
+
+    let handle = tokio::spawn({
+        let outbox = std::sync::Arc::clone(&outbox);
+        let envelope = std::sync::Arc::clone(&envelope);
+        async move { outbox.publish(&envelope).await }
+    });
+    handle
+        .await
+        .expect("spawned task joins")
+        .expect("publish succeeds");
 }

@@ -44,8 +44,8 @@ impl Message for OrderCreated {
     const VERSION: u16 = 1;
 }
 
-/// A second, distinct message type — used by the routing scenarios (E5/E6, RELIAR-45) to prove a
-/// disallowed/non-routed type publishes directly while `OrderCreated` stays durable.
+/// A second, distinct message type — used by the enqueue/publish scenarios (E5/E6, ADR 0036) to
+/// prove `publish` bypasses the outbox entirely while `OrderCreated` stays durable via `enqueue`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AuditLogged {
     pub event: String,
@@ -157,10 +157,10 @@ pub(crate) async fn seed(
     envelopes
 }
 
-/// The caller's own three-line serialization block (contract §4.2, Amendment D §3): nothing in
-/// `reliar-outbox`/`reliar-store-postgres` serializes on the routing publisher's path, so E5/E6
-/// build the [`SerializedEnvelope`] value themselves, exactly as a real host would before calling
-/// `OutboxPublisher::in_transaction(..).publish(..)` or `publish_direct(..)`.
+/// The caller's own three-line serialization block (outbox-publisher contract §2.1): nothing in
+/// `reliar-outbox`/`reliar-store-postgres` serializes on this path, so E5/E6 build the
+/// [`SerializedEnvelope`] value themselves, exactly as a real host would before calling
+/// `OutboxPublisher::enqueue(..)` or `Publisher::publish(..)`.
 pub(crate) fn serialize<T: Message>(envelope: Envelope<T>) -> SerializedEnvelope {
     let ser = JsonSerializer;
     let bytes = ser.serialize(&envelope.body).expect("serialize body");
@@ -231,9 +231,9 @@ pub(crate) async fn dead_row_count(pool: &PgPool) -> i64 {
         .expect("query dead count")
 }
 
-/// How many rows in `outbox` carry `id` — `0` or `1`. Used by the routing scenarios (E5/E6) to
-/// prove a directly published envelope was **never** staged, and that a rolled-back routed
-/// envelope never became visible.
+/// How many rows in `outbox` carry `id` — `0` or `1`. Used by the E5/E6 scenarios to prove a
+/// directly published envelope was **never** enqueued, and that a rolled-back enqueue never
+/// became visible.
 pub(crate) async fn row_count_for(pool: &PgPool, id: reliar_core::MessageId) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM outbox WHERE id = $1")
         .bind(id.as_uuid())

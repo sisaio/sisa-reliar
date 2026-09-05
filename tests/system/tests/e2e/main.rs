@@ -25,8 +25,8 @@ mod e1_outbox_drains_into_jetstream;
 mod e2_publish_recovers_after_stream_returns;
 mod e3_crash_after_publish_dedupes_on_the_stream;
 mod e4_unrepresentable_envelope_dead_letters;
-mod e5_routing_stages_and_streams_together;
-mod e6_disallow_wins_and_the_switch;
+mod e5_enqueue_reaches_the_stream_via_the_dispatcher;
+mod e6_publish_bypasses_the_outbox;
 
 use std::process::ExitCode;
 
@@ -61,8 +61,8 @@ fn main() -> ExitCode {
     trials.extend(e2_publish_recovers_after_stream_returns::trials(rt));
     trials.extend(e3_crash_after_publish_dedupes_on_the_stream::trials(rt));
     trials.extend(e4_unrepresentable_envelope_dead_letters::trials(rt));
-    trials.extend(e5_routing_stages_and_streams_together::trials(rt));
-    trials.extend(e6_disallow_wins_and_the_switch::trials(rt));
+    trials.extend(e5_enqueue_reaches_the_stream_via_the_dispatcher::trials(rt));
+    trials.extend(e6_publish_bypasses_the_outbox::trials(rt));
 
     let conclusion = libtest_mimic::run(&args, trials);
 

@@ -50,11 +50,10 @@ ack, and per-variant transient/permanent classification on the error. What you d
 the transactional guarantee: a direct `publish` happens when you call it, whether or not your
 database transaction commits. Add `reliar-outbox` + a store only when you need that (below).
 
-There is a middle path between the two: `OutboxPublisher` (`reliar-outbox`) takes the same
-`NatsPublisher` and a store, and decides **per message type** whether to stage durably or publish
-directly, per SRS §20.2's routing rule — the durability of the full outbox for the types that need
-it, the low-latency directness above for the ones that don't, behind one call site. See
-`docs/guides/outbox-routing.md`.
+There is a middle ground between the two: `OutboxPublisher` (`reliar-outbox`) takes the same
+`NatsPublisher` and a store, and offers **both** operations from one type — `enqueue` for the
+durability of the full outbox, `publish` for the low-latency directness above — the call site
+picks which one it needs, per SRS §20.2. See `docs/guides/outbox-enqueue-and-publish.md`.
 
 The same is true on the receive side: `NatsEnvelopeMapper::decode` turns a NATS message back into a
 `SerializedEnvelope` with only `reliar-core` in scope — the Phase 3 consumer builds on exactly that.
