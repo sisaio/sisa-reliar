@@ -32,6 +32,12 @@ jobs:
       releases: ${{ steps.release.outputs.releases }}
       releases_created: ${{ steps.release.outputs.releases_created }}
     steps:
+      # The one checkout in this repository that keeps the token in `.git/config`: release-plz
+      # pushes the release tags over the origin remote, so `persist-credentials: false` would
+      # break the release. It is safe here and nowhere else — this job runs only on `push` to
+      # `main`, i.e. on code that has already been reviewed and merged, never on a fork's pull
+      # request. Every checkout that can see pull-request-controlled code before a `cargo`
+      # invocation sets `persist-credentials: false` instead (CWE-522).
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -61,7 +67,12 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # No git write here — `gh release upload` and the attestation take their tokens from `env`
+      # and from the action's own input, so the persisted credential would only be an extra
+      # secret sitting in the workspace while `cargo metadata` runs.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: package migrations
         id: package

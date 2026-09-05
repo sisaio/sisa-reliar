@@ -19,6 +19,9 @@ reviews:
   high_level_summary: true
   poem: false
   review_status: true
+  # ADR 0035 §1 states the scope this encodes: a draft is work in progress, so the review is
+  # triggered by marking the pull request ready (and then repeated per push by
+  # `auto_incremental_review`); `main` is the only base branch a change merges into here.
   auto_review:
     enabled: true
     drafts: false
@@ -112,7 +115,10 @@ reviews:
         `ossf/scorecard-action`'s exact patch tag are the documented exceptions);
         `permissions: read-all` at the top, widened per job; every YAML file ends in `.yaml` — the
         single exception is the GitHub-mandated `.github/dependabot.yml`;
-        no secret in a workflow file, tokens only through repository secrets;
+        no secret in a workflow file, tokens only through repository secrets, and every
+        `actions/checkout` that precedes a `cargo` invocation sets `persist-credentials: false`
+        (CWE-522 — build scripts and proc macros run pull-request-controlled code) unless the job
+        itself pushes to the repository, which only `release.yaml`'s release-plz job does;
         a guard step must fail loudly — flag any `|| true`, swallowed exit code or grep whose
         no-match case silently passes.
     - path: "docs/decisions/**"

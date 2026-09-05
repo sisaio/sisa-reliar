@@ -11,8 +11,9 @@ changelog_update = false
 # Publish whatever is on `main` and not yet on crates.io, without waiting for a release PR that
 # this repository never opens.
 release_always = true
-# The gate that matters runs on pull requests (`ci.yaml` → `semver`); this is release-plz's own
-# belt-and-braces copy.
+# The gate that matters runs on pull requests (`ci.yaml` → the `versioning` job, whose two steps
+# are "a published version is frozen" and "cargo semver-checks against the published baseline");
+# this is release-plz's own belt-and-braces copy.
 semver_check = true
 # `cargo update` is a deliberate, reviewable change here, never a side effect of releasing.
 dependencies_update = false

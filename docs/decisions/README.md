@@ -56,7 +56,7 @@ it, especially for the areas SRS §45 protects.
 | [0032](0032-publisher-and-shared-primitives-in-core.md) | `Publisher`, `Classify`, `FailureKind` and `SettingsError` belong to `reliar-core` | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** a `tokio` dev-dependency in `reliar-core` is inside this ADR) | §18, §19.4, §23, §36, §43.B |
 | [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxRouter` + the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` capability | Accepted 2026-09-05 | §7, §12, §18, §19.6, §20, §22, §23, §33, §36 |
 | [0034](0034-versioning-and-release-flow.md) | Independent per-crate versions, bumped in the change that breaks them; `release-plz` publishes rather than decides | Accepted 2026-09-05 | §7, §40, §44, §45 |
-| [0035](0035-coderabbit-is-advisory-pr-review.md) | CodeRabbit reviews every pull request against a committed `.coderabbit.yaml`, as advisory input only | Accepted 2026-09-05 | §38, §41 |
+| [0035](0035-coderabbit-is-advisory-pr-review.md) | CodeRabbit reviews every ready pull request into `main` against a committed `.coderabbit.yaml`, as advisory input only | Accepted 2026-09-05 | §38, §41 |
 
 ## Numbering note
 
@@ -110,14 +110,19 @@ attempt failed: `reliar-core`'s public surface had changed (0032) while its vers
 0.1.0 that was already on crates.io, so `cargo publish` built the new `reliar-transport-nats`
 against the registry's `reliar-core` 0.1.0 and could not resolve `Publisher`, `Classify`,
 `FailureKind` or `SettingsError`. Crates version independently; in the 0.x line a public-surface
-change is a minor bump and everything else a patch; a crate is released whenever a crate it depends
-on is; and the bump lands in the pull request that requires it rather than in a `release-plz`
+change is a minor bump and everything else a patch; a dependent is released when the new version of
+a crate it depends on falls outside its declared requirement (an admitted patch bump obliges
+nothing); and the bump lands in the pull request that requires it rather than in a `release-plz`
 release PR — so `main` is publishable at every commit and `release.yaml` runs `release-plz`'s
 `release` command only (`release-plz.toml`). `ci.yaml`'s `versioning` job enforces it: a version that
-is on crates.io is frozen against its release tag, and `cargo semver-checks` runs against the
-published baseline (RELIAR-22).
+is on crates.io is frozen against its release tag — both the crate directory and the fields it
+inherits from the root manifest, compared as `cargo metadata`'s resolved record for that one package
+so a root edit fails only the crates that actually inherit it — and `cargo semver-checks` then runs
+against the published baseline (RELIAR-22).
 
-**0035** (2026-09-05) puts an automated reviewer on every pull request. `.coderabbit.yaml` at the
+**0035** (2026-09-05) puts an automated reviewer on every pull request that is ready for review and
+targets `main` — a draft is reviewed once it is marked ready, and `main` is the only base branch a
+change merges into here. `.coderabbit.yaml` at the
 repo root is the whole configuration — nothing lives in the vendor's UI — and its `path_instructions`
 restate the house rules per area (`reliar-core` purity, the crate-wide Rust rules, the Postgres
 provider's sqlx/lease/migration rules, the NATS mapping, the test rules, `.github/`, `deploy/`), as a

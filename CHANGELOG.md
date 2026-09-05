@@ -77,7 +77,8 @@ Phase 2: the NATS transport, and the relocation of the shared publish vocabulary
   items, which is why this is a minor bump and not a patch.
 - **`reliar-store-postgres` requires `reliar-outbox` 0.2.0 and `reliar-core` 0.2.0.** Its own API is
   unchanged; the release exists so that a user on `reliar-outbox` 0.2.0 has a Postgres store that
-  admits it — `reliar-store-postgres` 0.1.0 requires `reliar-outbox ^0.1.0` and cannot
+  admits it — `reliar-store-postgres` 0.1.0 requires `reliar-outbox ^0.1.0`, which does not admit
+  `reliar-outbox` 0.2.0, so no published `reliar-store-postgres` could be used alongside it
   (ADR 0034 §3).
 - **Versions are owned by the change that needs them, and `release-plz` publishes rather than
   decides** ([ADR 0034](docs/decisions/0034-versioning-and-release-flow.md)). `release-plz.toml`

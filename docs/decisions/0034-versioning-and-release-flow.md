@@ -64,12 +64,20 @@ bumps the minor. Cargo treats `0.x.y` as breaking at the minor, so this is the o
 users a truthful compatibility signal before 1.0, and it removes the "is this additive enough for a
 patch?" argument from every release.
 
-### 3. A crate whose internal dependency's **major-compatible range** changes must bump too
+### 3. A dependent is released when the new dependency version falls outside its requirement
 
 `reliar-store-postgres` 0.1.0 requires `reliar-outbox ^0.1.0`, which does not admit `0.2.0`. A user
 who wants `reliar-outbox` 0.2.0 therefore cannot have *any* published `reliar-store-postgres` unless
-a new one ships. So: when a crate's version changes, every workspace crate that depends on it is
-released as well, at least a minor bump under §2, in the same release.
+a new one ships. So: when a crate's version changes, every workspace crate **whose requirement on it
+no longer admits the new version** is released in the same release, at least a minor bump under §2.
+
+The narrowing matters, because §2 makes the common bump a minor one and Cargo reads `0.x` minors as
+breaking, so most bumps do leave their dependents' ranges. An **admitted** bump does not: a
+dependency going `0.2.0 → 0.2.1` under a dependent's `^0.2.0` obliges no dependent release. Cargo
+resolves the already-published dependent onto the new patch on its own, so republishing it would
+change nothing a user can observe, and the pin in `[workspace.dependencies]` does not move either
+(`version = "0.2.0"` still matches). A dependent is still released when its *own* surface or
+behaviour changes (§2), or when anything else it inherits from the root manifest changes (§6).
 
 ### 4. The version bump lands in the change that requires it — not in a release PR
 
@@ -77,10 +85,11 @@ released as well, at least a minor bump under §2, in the same release.
 version is already published also changes:
 
 - that crate's `[package] version`,
-- the `[workspace.dependencies]` `version` pin for it (Cargo enforces this — a `path` dependency
-  whose `version` requirement no longer matches the local manifest is a hard resolution error, so a
-  forgotten pin cannot compile),
-- the versions of its dependents (§3),
+- the `[workspace.dependencies]` `version` pin for it, whenever the new version leaves the pinned
+  requirement (Cargo enforces that half — a `path` dependency whose `version` requirement no longer
+  matches the local manifest is a hard resolution error, so a forgotten pin cannot compile; a patch
+  bump inside `^0.2.0` leaves the pin alone),
+- the versions of the dependents whose requirement the new version leaves (§3),
 - `CHANGELOG.md`.
 
 `main` is therefore always publishable, and CI checks the bump on the PR (§6) instead of the release
@@ -93,7 +102,7 @@ job discovering it on `main`.
 `release-pr` command**, because §4 gives version numbers a single owner. Two owners is how a bump
 gets forgotten. `release-plz.toml` records this (`changelog_update = false`: the root
 `CHANGELOG.md` is hand-written Keep a Changelog, and per-crate changelog files are not generated;
-`semver_check = true`; `allow_dirty = false`).
+`release_always = true`; `semver_check = true`; `dependencies_update = false`).
 
 The ordering bug in the old workflow is fixed by the same removal: `release` and `release-pr` were
 two steps of one job with `release` first, so the failed publish also cancelled the release PR that
@@ -104,13 +113,44 @@ would have proposed the missing bump.
 `ci.yaml`'s `versioning` job runs two checks, in this order.
 
 **The freeze check** asks crates.io for each publishable member's published versions. If the
-manifest version is among them, the crate's directory must be identical to the tag that published
-it (`git diff --quiet <name>-v<version> HEAD -- crates/<name>`); otherwise the job fails naming the
-crate and telling the author to bump it, its `[workspace.dependencies]` pin, its dependents and the
-changelog. A crate that is not on crates.io yet, and a version that is not published yet, are both
-skipped — so a release candidate is never blocked, and a crate enrols itself at its first publish
-with no workflow edit. Verified both ways on this repository: the check exits 1 on `2265e6e` (the
-tree that failed to publish), naming all three crates, and exits 0 once they are bumped.
+manifest version is among them, **what that crate would publish** must be identical to the tag that
+published it — and that is two comparisons, because the crate directory is only half of the tarball.
+
+- *The directory*: `git diff --quiet <name>-v<version> HEAD -- crates/<name>`.
+- *The fields inherited from the root manifest*: `[workspace.package]`, `[workspace.dependencies]`
+  and `[workspace.lints]` are resolved into the generated `Cargo.toml` at publish time, so a root
+  edit changes a published crate's manifest — a dependency requirement, `rust-version`, `edition`, a
+  lint level — while its directory stays byte-identical to the tag. The job therefore adds the tag
+  as a second `git worktree`, runs `cargo metadata --no-deps --format-version 1` at both refs,
+  reduces each to that one package's record (version, edition, `rust_version`, license, features,
+  and every dependency's `req`/`kind`/`optional`/`features`/`uses_default_features`/`target`, plus
+  `publish`, `links` and the crates.io metadata fields) with absolute paths, ids and `manifest_path`
+  normalised away, and diffs the two. `[workspace.lints]` is the one part invisible to
+  `cargo metadata`, so it is compared textually — and only for a crate that writes
+  `[lints] workspace = true`.
+
+Diffing the root manifest wholesale was rejected as the fix: it would force a bump of every
+published crate on any root edit, including one touching an examples-only dependency or a build
+profile. The effective-inputs comparison fires only for the crates that actually inherit what
+changed — moving `[workspace.package] rust-version` fails `reliar-core`, which inherits it, and
+leaves `reliar-store-postgres` alone, because that crate declares its own (ADR 0025).
+
+`cargo metadata --no-deps` is the only form of "resolved manifest" that can be a pull-request gate:
+it reads manifests, runs no resolver and contacts no registry, so it evaluates a tag whose sibling
+crates' *current* versions are unpublished. Reading the generated `Cargo.toml` out of a
+`cargo package -p <crate>` tarball exposes the same resolved fields, but it resolves siblings from
+crates.io and therefore fails during exactly the releases this gate exists to survive — the same
+reason `cargo package` is not a gate at all (below).
+
+A crate that is not on crates.io yet, and a version that is not published yet, are both skipped — so
+a release candidate is never blocked, and a crate enrols itself at its first publish with no
+workflow edit. Verified both ways on this repository: the check exits 1 on `2265e6e` (the tree that
+failed to publish), naming all three crates, and exits 0 once they are bumped. The inherited half
+was verified on a scratch clone checked out at the Phase-1 release tags, where all three crate
+directories are clean and the check passes: changing `[workspace.dependencies] sqlx` from `0.9` to
+`0.9.1` then fails `reliar-store-postgres` alone (`req` `^0.9` → `^0.9.1`); adding a lint to
+`[workspace.lints.clippy]` fails all three; and changing `[workspace.dependencies] axum`, which only
+`examples/` uses, still passes.
 
 **`cargo semver-checks check-release -p <crate> --baseline-version <highest published>`** then runs
 for every published crate. It is the second half, not the first: semver-checks finds *breaking*
@@ -134,9 +174,14 @@ crate's real tarball built against the sibling it has just published.
 - The version number is part of a change's diff and part of review. "Bump forgotten" becomes a red
   PR check instead of a red release job.
 - The first pull request to touch a crate after that crate's release must bump it — including for a
-  test-only or docs-only edit, since the published tarball carries those files too. That bump is a
-  patch under §2. Every later pull request in the same cycle sees an unpublished version and is not
-  asked again.
+  test-only or docs-only edit, since the published tarball carries those files too, and including a
+  root-manifest edit that reaches it through `[workspace.package]`, `[workspace.dependencies]` or
+  `[workspace.lints]`. That bump is a patch under §2. Every later pull request in the same cycle
+  sees an unpublished version and is not asked again.
+- A root-manifest edit can therefore make several published crates need a patch bump at once. That
+  is the honest cost of workspace inheritance: those crates really would publish a different
+  manifest. The blast radius stays proportional — the check compares each crate's own resolved
+  record, so an edit no published crate inherits costs nothing.
 - `main` is publishable at every commit; the release job is a publish, never a decision.
 - Users of `reliar-outbox` 0.1.0 who upgrade to 0.2.0 must also move to `reliar-core` 0.2.0 and
   `reliar-store-postgres` 0.2.0. That is stated in `CHANGELOG.md` and is what the 0.x minor is for.

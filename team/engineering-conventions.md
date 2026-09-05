@@ -198,9 +198,13 @@ Every public item has rustdoc (`cargo doc -D warnings`, `#![warn(missing_docs)]`
 are additive and documented in the crate README/`lib.rs`. Crates version **independently**, and the
 bump lands in the change that needs it, not in a release PR (**ADR 0034**): a version already on
 crates.io is frozen, so editing such a crate means bumping it — minor for a public-surface change,
-patch otherwise — together with its `[workspace.dependencies]` pin, its workspace dependents and
-`CHANGELOG.md`. CI's `versioning` job checks both halves (the freeze against the release tag, then
-`cargo semver-checks` against the published baseline). Pre-1.0 breaking changes are allowed but
+patch otherwise — together with `CHANGELOG.md`, and, when the new version leaves the requirement
+they declare, its `[workspace.dependencies]` pin and its workspace dependents (an admitted bump
+such as `^0.2.0` → 0.2.1 needs neither). "Editing such a crate" includes changing what it inherits
+from the root manifest: `[workspace.package]`, `[workspace.dependencies]` and `[workspace.lints]`
+are resolved into the published `Cargo.toml`. CI's `versioning` job checks both halves — the freeze
+against the release tag, comparing the crate directory *and* `cargo metadata`'s resolved record for
+that package, then `cargo semver-checks` against the published baseline. Pre-1.0 breaking changes are allowed but
 recorded in `CHANGELOG.md` (Keep a Changelog). License `MIT` (single `LICENSE` file, `license = "MIT"`; the human chose MIT-only over the SRS v1.0 dual-license text). Release
 via `release.yaml` only after `ci` + `test` + `security` pass.
 

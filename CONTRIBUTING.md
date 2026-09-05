@@ -23,10 +23,14 @@ Thanks for helping build Reliar. Issues, discussions, and pull requests are all 
 9. **Conventional commits** (`feat:`, `fix:`, `docs:`, `chore:`, `feat!:` for breaking).
 10. **Bump the version in the change that needs it.** A version on crates.io is frozen: if you edit
     a crate whose current version is already published, bump it in the same PR — minor for a
-    public-surface change, patch otherwise — along with its `version` pin in the root
-    `[workspace.dependencies]`, the versions of the crates that depend on it, and `CHANGELOG.md`
-    ([ADR 0034](docs/decisions/0034-versioning-and-release-flow.md)). CI's `versioning` job fails
-    the PR otherwise.
+    public-surface change, patch otherwise — along with `CHANGELOG.md`, plus its `version` pin in
+    the root `[workspace.dependencies]` and the crates that depend on it *when the new version
+    leaves the requirement they declare* (a patch bump inside `^0.2.0` leaves both alone).
+    "Editing a crate" includes editing what it inherits from the root manifest —
+    `[workspace.package]`, `[workspace.dependencies]`, `[workspace.lints]` are baked into the
+    published `Cargo.toml`, so a root change can freeze-fail a crate whose own directory you never
+    touched ([ADR 0034](docs/decisions/0034-versioning-and-release-flow.md)). CI's `versioning` job
+    fails the PR otherwise, naming the crate.
 11. **Never commit secrets.** Examples and tests read `DATABASE_URL` from the environment.
 
 ## Developer Certificate of Origin
