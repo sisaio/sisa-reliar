@@ -20,9 +20,14 @@ Thanks for helping build Reliar. Issues, discussions, and pull requests are all 
    `tests/system` proves the two together.
 8. **Public items are documented** and state the guarantee they uphold; `cargo doc` runs with
    `-D warnings`.
-9. **Conventional commits** (`feat:`, `fix:`, `docs:`, `chore:`, `feat!:` for breaking) — the
-   changelog and version bumps are generated from them.
-10. **Never commit secrets.** Examples and tests read `DATABASE_URL` from the environment.
+9. **Conventional commits** (`feat:`, `fix:`, `docs:`, `chore:`, `feat!:` for breaking).
+10. **Bump the version in the change that needs it.** A version on crates.io is frozen: if you edit
+    a crate whose current version is already published, bump it in the same PR — minor for a
+    public-surface change, patch otherwise — along with its `version` pin in the root
+    `[workspace.dependencies]`, the versions of the crates that depend on it, and `CHANGELOG.md`
+    ([ADR 0034](docs/decisions/0034-versioning-and-release-flow.md)). CI's `versioning` job fails
+    the PR otherwise.
+11. **Never commit secrets.** Examples and tests read `DATABASE_URL` from the environment.
 
 ## Developer Certificate of Origin
 
@@ -78,15 +83,38 @@ docker ps -aq --filter label=org.testcontainers.managed-by=testcontainers --filt
 — copy `deploy/compose/secrets/postgres_password.example` to `postgres_password` first, then
 `docker compose -f deploy/compose/docker-compose.yaml up -d --wait postgres nats` (add
 `--profile pooler`, with `RELIAR_PG_PASSWORD` exported from that same secret, for the `PgDog`
-pooler; drop `nats` if you only need `examples/outbox-basic`/`axum-outbox`). Before opening a
-release PR, `release-plz release --dry-run` shows what would publish.
+pooler; drop `nats` if you only need `examples/outbox-basic`/`axum-outbox`). The version rules
+(house rule 10) are checked by CI against crates.io and the release tags; to reproduce a publish
+locally, `cargo package -p <crate>` is the only form that resolves the Reliar dependencies from the
+registry the way `cargo publish` will — `cargo package --workspace` resolves them to the local
+copies and passes on trees that cannot be published. It fails while a dependency's new version is
+not on crates.io yet, which is expected between the merge of a bump and the release that publishes
+it.
 CI runs these checks plus MSRV, coverage, CodeQL, Scorecard, and the dependency audit.
 
 ## Pull requests
 
 Keep a PR to one story or fix, include tests that fail without the change, and update
 `CHANGELOG.md` under `## [Unreleased]` for anything user-visible. A public API change needs its ADR
-in the same PR.
+in the same PR, and a change to an already-published crate needs its version bump (house rule 10).
+Releases happen from `main`: `release.yaml` runs `release-plz release`, which tags, creates the
+GitHub release and publishes in dependency order whatever version on `main` is not yet on
+crates.io. There is no release PR to merge.
+
+## Automated review
+
+Every pull request is reviewed automatically by **CodeRabbit**, configured by the committed
+[`.coderabbit.yaml`](.coderabbit.yaml): its `path_instructions` restate this project's rules —
+`reliar-core` purity, native async fns in traits, hand-rolled `#[non_exhaustive]` errors, sqlx
+macros and lease/claim semantics in the Postgres provider, the NATS mapping rules, public-API tests
+in `tests/`, and the workflow/YAML policy — so the bot applies the same law a human maintainer
+does. Its findings are **advisory input** to the human reviewer and to the team's `reviewer` agent;
+they neither approve nor block a merge, and CI plus the
+[Definition of Done](team/definition-of-done.md) remain the only gates. The rules themselves live
+in [`team/engineering-conventions.md`](team/engineering-conventions.md) and
+[`team/definition-of-done.md`](team/definition-of-done.md) — when a rule changes there (or in an
+ADR), update `.coderabbit.yaml` in the same PR. Disagree with a finding in the PR thread; comment
+`@coderabbitai` to ask it for reasoning or to dismiss it.
 
 ## Branches
 

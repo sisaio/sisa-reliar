@@ -1,0 +1,22 @@
+# Release policy: ADR 0034. Versions are owned by the change that needs them (the PR bumps
+# `[package] version`, the `[workspace.dependencies]` pin and `CHANGELOG.md`), and CI proves the
+# bump is sufficient with `cargo semver-checks` against the published baseline. `release-plz` is
+# used for the mechanical half only — tag, GitHub release, `cargo publish` in dependency order —
+# via the `release` command in `.github/workflows/release.yaml`. There is deliberately no
+# `release-pr` step: two owners for a version number is how a bump gets forgotten.
+[workspace]
+# The root `CHANGELOG.md` is hand-written Keep a Changelog and covers the workspace as a whole
+# (ADR 0034 §4). Per-crate changelog files are not generated.
+changelog_update = false
+# Publish whatever is on `main` and not yet on crates.io, without waiting for a release PR that
+# this repository never opens.
+release_always = true
+# The gate that matters runs on pull requests (`ci.yaml` → `semver`); this is release-plz's own
+# belt-and-braces copy.
+semver_check = true
+# `cargo update` is a deliberate, reviewable change here, never a side effect of releasing.
+dependencies_update = false
+# Publishing in dependency order means each crate waits for the index to serve the one before it
+# (reliar-core → reliar-outbox → reliar-store-postgres → reliar-transport-nats).
+publish_timeout = "30m"
+git_release_enable = true

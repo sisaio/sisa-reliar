@@ -195,8 +195,12 @@ Dependabot's `github-actions` ecosystem keeps the majors current; new majors mus
 ## 11. Public API & releases (SRS §7, §40, §44)
 
 Every public item has rustdoc (`cargo doc -D warnings`, `#![warn(missing_docs)]`). Feature flags
-are additive and documented in the crate README/`lib.rs`. SemVer is enforced with
-`cargo semver-checks` from the first published version; pre-1.0 breaking changes are allowed but
+are additive and documented in the crate README/`lib.rs`. Crates version **independently**, and the
+bump lands in the change that needs it, not in a release PR (**ADR 0034**): a version already on
+crates.io is frozen, so editing such a crate means bumping it — minor for a public-surface change,
+patch otherwise — together with its `[workspace.dependencies]` pin, its workspace dependents and
+`CHANGELOG.md`. CI's `versioning` job checks both halves (the freeze against the release tag, then
+`cargo semver-checks` against the published baseline). Pre-1.0 breaking changes are allowed but
 recorded in `CHANGELOG.md` (Keep a Changelog). License `MIT` (single `LICENSE` file, `license = "MIT"`; the human chose MIT-only over the SRS v1.0 dual-license text). Release
 via `release.yaml` only after `ci` + `test` + `security` pass.
 
@@ -213,4 +217,4 @@ ownerless `// TODO`. Let names and types carry the meaning.
 `cargo test --workspace` (with Postgres available for provider crates) · `cargo hack check
 --feature-powerset` (per crate with features) · `cargo sqlx prepare --check` · `cargo deny check` ·
 `cargo audit` · `cargo machete` · `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` ·
-`cargo semver-checks` (once published).
+`cargo semver-checks check-release --baseline-version <highest published>` per published crate (ADR 0034).

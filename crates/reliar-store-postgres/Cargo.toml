@@ -1,6 +1,6 @@
 [package]
 name = "reliar-store-postgres"
-version = "0.1.0"
+version = "0.2.0"
 description = "PostgreSQL provider for the Reliar transactional outbox: migrations, migrate(), enqueue and the SKIP LOCKED claim."
 edition.workspace = true
 # Overrides the workspace floor (1.88): sqlx 0.9 declares `rust-version = "1.94"`, six releases

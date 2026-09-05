@@ -406,3 +406,123 @@ jobs:
           done <<< "$exclusions"
 
           cargo +"$MSRV" check --workspace --all-features "${args[@]}"
+
+  # ADR 0034. Phase 2 merged with `reliar-core` still at the version it had on crates.io while its
+  # public surface had changed (ADR 0032 moved `Publisher`/`Classify`/`FailureKind`/`SettingsError`
+  # into it), so the `release` job packaged `reliar-transport-nats` against the *registry's*
+  # `reliar-core` 0.1.0 and failed with four `unresolved import`s. Nothing on the pull request could
+  # have caught it: inside the workspace every Reliar dependency resolves through `path`, and
+  # `cargo package --workspace` — since Cargo 1.83 — packages the members together and resolves
+  # siblings to the freshly packaged local copies, so it passes on exactly the tree that fails to
+  # publish (verified on cargo 1.98). Only `cargo package -p <crate>` reaches the registry, and that
+  # form cannot be a gate: during any release the dependency's new version is by definition not yet
+  # published, so it fails with `failed to select a version for the requirement`.
+  #
+  # What is checkable on a pull request is the invariant underneath: **a version that is on
+  # crates.io is frozen**. If a crate's manifest version is already published, its directory must be
+  # byte-identical to the tag that published it; otherwise that version number names two different
+  # crates and the next publish of anything depending on it breaks. `cargo semver-checks` then says
+  # how big the bump has to be — it finds *breaking* differences, which additive ones (core's, here)
+  # are not, so the freeze check is the load-bearing half and semver-checks is the second half.
+  versioning:
+    name: published versions are frozen
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      # Deliberately empty for this job only: `cargo semver-checks` compiles the *published*
+      # baseline crate and generates rustdoc JSON from it. That crate is immutable and may warn
+      # under a newer toolchain; a warning in a release that already shipped is not this pull
+      # request's to fix, and `-D warnings` would turn it into a failure with no possible fix.
+      RUSTFLAGS: ""
+      RUSTDOCFLAGS: ""
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The freeze check compares against release tags, so it needs the tags and the history
+          # behind them — the default shallow, tagless checkout would silently have nothing to
+          # compare and this gate would pass by doing nothing.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: a published version is frozen
+        run: |
+          set -euo pipefail
+          # crates.io answers 403 without a User-Agent that identifies the caller.
+          ua="sisa-reliar-ci (+https://github.com/sisaio/sisa-reliar)"
+          baselines="$RUNNER_TEMP/semver-baselines.tsv"
+          : > "$baselines"
+          # Assigned before it is piped: inside a pipeline `set -e` would not stop a failing
+          # `cargo metadata`, and this gate must never run on an empty list. `publish = false`
+          # appears as an empty array; a publishable package has `null`.
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          members=$(printf '%s' "$metadata" | jq -r '
+            .packages[] | select(.publish != [])
+            | [.name, .version, (.manifest_path | sub("/Cargo.toml$"; ""))] | @tsv')
+          if [ -z "$members" ]; then
+            echo "::error::no publishable workspace member found; this gate would pass having checked nothing"
+            exit 1
+          fi
+          checked=0
+          violations=0
+          while IFS=$'\t' read -r name version dir; do
+            [ -n "$name" ] || continue
+            checked=$((checked + 1))
+            dir=${dir#"$GITHUB_WORKSPACE/"}
+            body=$(mktemp)
+            code=$(curl -sS -H "User-Agent: $ua" -o "$body" -w '%{http_code}' \
+              "https://crates.io/api/v1/crates/$name")
+            case "$code" in
+              404)
+                echo "$name $version — not on crates.io; its first publish is unconstrained"
+                continue
+                ;;
+              200) ;;
+              *)
+                echo "::error::crates.io returned HTTP $code for $name; the freeze check cannot run"
+                exit 1
+                ;;
+            esac
+            published=$(jq -r '.versions[].num' "$body")
+            if printf '%s\n' "$published" | grep -qx -- "$version"; then
+              tag="$name-v$version"
+              if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+                echo "::error::$name $version is on crates.io but tag $tag does not exist here; the freeze check has nothing to compare against"
+                exit 1
+              fi
+              if git diff --quiet "$tag" HEAD -- "$dir"; then
+                echo "$name $version is published and unchanged since $tag"
+              else
+                git diff --stat "$tag" HEAD -- "$dir"
+                echo "::error::$name $version is already on crates.io and $dir has changed since $tag. Bump it — minor if the public surface changed, patch otherwise — together with its version pin in the root [workspace.dependencies], the versions of the workspace crates that depend on it, and CHANGELOG.md (ADR 0034)."
+                violations=$((violations + 1))
+              fi
+            else
+              echo "$name $version is not published yet — release candidate"
+            fi
+            # Highest published version = the semver baseline for the next step. Written for every
+            # published crate, including the frozen ones, so a crate is enrolled in semver-checks
+            # by its first publish and never by editing this workflow.
+            baseline=$(printf '%s\n' "$published" | sort -V | tail -1)
+            printf '%s\t%s\n' "$name" "$baseline" >> "$baselines"
+          done <<< "$members"
+          if [ "$violations" -ne 0 ]; then
+            exit 1
+          fi
+          echo "publishable crates checked: $checked"
+      - name: cargo semver-checks against the published baseline
+        run: |
+          set -euo pipefail
+          baselines="$RUNNER_TEMP/semver-baselines.tsv"
+          if [ ! -s "$baselines" ]; then
+            echo "nothing published yet — no baseline to check against"
+            exit 0
+          fi
+          while IFS=$'\t' read -r name baseline; do
+            [ -n "$name" ] || continue
+            echo "::group::$name vs $baseline"
+            cargo semver-checks check-release -p "$name" --baseline-version "$baseline" --all-features
+            echo "::endgroup::"
+          done < "$baselines"
