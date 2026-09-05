@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
-# `tests/*` joins this list when the first system-test package lands; Cargo rejects a glob that
-# matches nothing, so each glob is added with its first member.
-members = ["crates/*", "examples/*"]
+# `tests/*` covers `tests/system`, the cross-provider Postgres+NATS end-to-end package (ADR 0031
+# §6) — added in the same change that created that package, per Cargo's rule that a glob must
+# match something.
+members = ["crates/*", "examples/*", "tests/*"]
 
 [workspace.package]
 edition = "2024"
@@ -27,6 +28,13 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = "1"
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 metrics = "0.24"
+# Phase 2 (ADR 0031). `jetstream` is the only feature Reliar needs; everything else — a rustls
+# crypto provider (`ring`/`aws-lc-rs`), `nkeys`/credentials auth, `websockets`, `kv`,
+# `object-store`, `service` — is the **application's** choice and reaches the same compiled
+# `async-nats` through feature unification, because the host builds the connection and the
+# JetStream `Context` itself (ADR 0029). A library that enables a crypto provider is choosing its
+# host's TLS stack. `chrono` stays off, so deny.toml's graph-wide ban is untouched.
+async-nats = { version = "0.50", default-features = false, features = ["jetstream"] }
 sqlx = { version = "0.9", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls",
@@ -42,16 +50,24 @@ sqlx = { version = "0.9", default-features = false, features = [
 # two in lockstep or `cargo metadata` fails workspace-wide.
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
+# The one-binary-per-provider test harness (RELIAR-27, ADR 0031 §4/§6): `harness = false` +
+# `libtest-mimic` so each provider's `main` owns its shared container(s) as locals and drops them
+# explicitly before returning, rather than via `Conclusion::exit()`'s `process::exit`.
+libtest-mimic = "0.8"
 criterion = "0.8"
 proptest = "1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 # `examples/` only — library crates never depend on either (house style, `team/engineering-conventions.md` §1).
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 anyhow = "1"
+# `examples/nats-pub-sub` only, for `async_nats::Subscriber`'s `Stream` impl (`StreamExt::next`) —
+# the lean sub-crate is enough, no example needs the wider `futures` facade.
+futures-util = "0.3"
 
 reliar-core = { path = "crates/reliar-core", version = "0.1.0", default-features = false }
 reliar-outbox = { path = "crates/reliar-outbox", version = "0.1.0" }
 reliar-store-postgres = { path = "crates/reliar-store-postgres", version = "0.1.0" }
+reliar-transport-nats = { path = "crates/reliar-transport-nats", version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

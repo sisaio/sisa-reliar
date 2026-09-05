@@ -59,11 +59,19 @@ and tools add `publish = false`. **Create a crate only when its implementation b
 
 ```
 reliar-core        ← nothing Reliar-specific; no sqlx/postgres/nats/kafka/redis; no transport routing concepts
-reliar-outbox      ← reliar-core            (OutboxStore, Publisher, dispatcher, retry policy)
+                     owns the shared vocabulary: Envelope, Metadata, Headers, Serializer,
+                     EnvelopeMapper, Publisher, Classify/FailureKind, SettingsError (ADR 0032)
+reliar-outbox      ← reliar-core            (OutboxStore, dispatcher, retry policy, outbox settings)
 reliar-inbox       ← reliar-core   (reliar-idempotency likewise; caching is out of scope — decision #29)
-reliar-store-postgres ← reliar-outbox, reliar-inbox, …  (never another provider)
-reliar-transport-nats ← reliar-outbox (Publisher), reliar-core (EnvelopeMapper)
+reliar-store-postgres ← reliar-outbox, reliar-core       (implements OutboxStore; never another provider)
+reliar-transport-nats ← reliar-core ONLY                 (implements Publisher + EnvelopeMapper)
 ```
+
+A provider depends on `reliar-core` directly, and on an abstraction crate **only when it implements
+a trait that crate owns** (ADR 0032). Core is not a catch-all: an item goes there when it names no
+storage engine, broker or routing concept **and** more than one capability needs it to talk to
+another — never when it encodes *how* a capability works (`OutboxStore`, `RetryPolicy`,
+`SubjectResolver` all stay out).
 
 Enforce it in CI: `cargo tree -p reliar-core -e normal | grep -E 'sqlx|postgres|async-nats'` must be empty.
 
@@ -125,7 +133,8 @@ impl std::error::Error for PublishError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { match self { Self::Transient { source } => Some(source.as_ref()), _ => None } }
 }
 
-/// Implemented by every Publisher error so the dispatcher can decide retry vs dead.
+/// In `reliar-core` (ADR 0032). Implemented by every `Publisher::Error` **and every
+/// `OutboxStore::Error`**, so the dispatcher can decide retry vs dead without a downcast.
 pub trait Classify { fn kind(&self) -> FailureKind; }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum FailureKind { Transient, Permanent }
 ```

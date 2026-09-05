@@ -52,14 +52,56 @@ jobs:
       # Identical to the sqlx job's DSN — decision #28 resolves Reliar's tables through the
       # connection's search_path, so a DSN without it exercises a different schema than the code.
       DATABASE_URL: postgres://reliar:reliar@localhost:5432/reliar?options=-c%20search_path%3Dreliar,public
+      # Same substitution for the Phase-2 transport tests: with NATS_URL set they use the server
+      # started below; without it (a local run) each test binary boots its own container
+      # (ADR 0031 §4).
+      NATS_URL: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v7
+      # NATS is a **step**, not a service container, and that is not an oversight: a service
+      # container accepts only image/env/ports/volumes/options — it cannot override the image's
+      # CMD — and `nats`'s default command starts nats-server from /etc/nats/nats-server.conf
+      # with JetStream **off**. Every Reliar publish awaits a JetStream ack (ADR 0028), so a
+      # `nats` service container is incapable of serving this suite. ADR 0031 §3.
+      #
+      # The readiness probe asserts the same fact compose's healthcheck does — `/jsz?config=1`
+      # reports a `store_dir` — through curl rather than compose's wget, because that is what the
+      # runner has and the container is probed from outside. The endpoint is the point:
+      # /healthz answers {"status":"ok"} even with JetStream disabled (verified against this
+      # image), while /jsz omits store_dir. No cleanup step: the runner is discarded with the job,
+      # which is also why there is no `--rm` — the logs must outlive a failed test step (see the
+      # dump below). On a self-hosted runner the fixed `--name` would collide with a leftover
+      # container from an earlier job; this job assumes the ephemeral GitHub-hosted runner.
+      #
+      # Starting the container and waiting for it are two steps on purpose. `docker run -d`
+      # returns as soon as the container is created, so the server boots *while* the toolchain
+      # installs and the cache restores; the readiness loop then runs after that work and almost
+      # always passes on its first poll. A single step here would have blocked the job on a
+      # 30-poll loop before a single byte of Rust was fetched.
+      - name: start a JetStream server
+        run: |
+          set -euo pipefail
+          docker run -d --name reliar-nats -p 4222:4222 -p 8222:8222 \
+            nats:2.14-alpine -js -m 8222
       # rust-toolchain.toml pins the channel for every cargo call, and llvm-tools-preview lives
       # there for cargo-llvm-cov; installing `stable` here would be silently overridden, so the
       # pinned toolchain is installed deliberately instead.
       - name: install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      - name: wait for JetStream to serve
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -fsS 'http://127.0.0.1:8222/jsz?config=1' | grep -q store_dir; then
+              echo "JetStream is serving"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::NATS did not become ready with JetStream enabled"
+          docker logs reliar-nats || true
+          exit 1
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
@@ -92,6 +134,13 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+      # A NATS test failure is usually a server-side story (a stream rejected, JetStream not
+      # serving, the connection dropped) and the transport crate deliberately logs no broker
+      # `Display` (ADR 0030 Amendment B), so the server's own log is the only place that
+      # evidence exists. Only on failure, and never fatal itself.
+      - name: nats server log
+        if: failure()
+        run: docker logs reliar-nats || true
 
   sqlx-offline-cache:
     name: sqlx offline cache is current

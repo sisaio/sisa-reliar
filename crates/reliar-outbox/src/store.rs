@@ -4,10 +4,9 @@
 
 use std::time::Duration;
 
-use reliar_core::MessageId;
+use reliar_core::{Classify, MessageId};
 
 use crate::ordering::Ordering;
-use crate::publisher::Classify;
 use crate::record::{OutboxRecord, truncate_error};
 use crate::worker::WorkerId;
 

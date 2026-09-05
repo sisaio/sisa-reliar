@@ -7,7 +7,7 @@
 use std::env::VarError;
 use std::time::Duration;
 
-use reliar_outbox::SettingsError;
+use reliar_core::SettingsError;
 
 /// What is provider-specific about the outbox (contract §4). Everything portable lives in
 /// `reliar_outbox::OutboxSettings`.

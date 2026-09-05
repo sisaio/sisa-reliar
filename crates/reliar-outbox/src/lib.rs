@@ -1,7 +1,7 @@
 //! `reliar-outbox` is the storage-agnostic transactional outbox: the [`OutboxStore`]/
-//! [`OutboxDeadLetters`]/[`Publisher`] capability traits, the request and result types that
-//! cross their boundary, a pure [`RetryPolicy`], the feature's [`OutboxSettings`], and the
-//! [`OutboxMetrics`] hook (SRS §19–§26).
+//! [`OutboxDeadLetters`] capability traits (plus `reliar_core::Publisher`, re-exported here for
+//! convenience), the request and result types that cross their boundary, a pure [`RetryPolicy`],
+//! the feature's [`OutboxSettings`], and the [`OutboxMetrics`] hook (SRS §19–§26).
 //!
 //! This slice ships the traits and types a provider builds against, a host configures, the
 //! [`OutboxDispatcher`] worker loop, and the `test-support` fakes a test drives without a
@@ -48,7 +48,6 @@ mod duration_serde;
 mod error;
 mod metrics;
 mod ordering;
-mod publisher;
 mod record;
 mod retry;
 mod settings;
@@ -61,10 +60,14 @@ pub use dispatcher::{DefaultRetry, DispatchError, OutboxDispatcher, OutboxDispat
 pub use error::ConfigError;
 pub use metrics::{NoopMetrics, OutboxMetrics};
 pub use ordering::Ordering;
-pub use publisher::{Classify, FailureKind, Publisher};
 pub use record::{OutboxRecord, OutboxRecordBuilder};
+/// Re-exported from `reliar-core` (ADR 0032): a store author's or a publisher's `Classify`
+/// bound, a publish/store failure's `FailureKind`, the `Publisher` capability trait, and the
+/// shared `SettingsError` all live in core now. New code should name `reliar_core::` directly;
+/// this re-export keeps existing `use reliar_outbox::{…}` imports one line.
+pub use reliar_core::{Classify, FailureKind, Publisher, SettingsError};
 pub use retry::{ExponentialBackoff, RetryPolicy};
-pub use settings::{DispatcherSettings, OutboxSettings, RetentionSettings, SettingsError};
+pub use settings::{DispatcherSettings, OutboxSettings, RetentionSettings};
 pub use store::{
     AcquireRequest, AcquiredBatch, CompletedMessage, DeadLetterPage, DeadQuery, DeadReason,
     FailedMessage, FailureOutcome, MessageRef, OutboxDeadLetters, OutboxStats, OutboxStore,

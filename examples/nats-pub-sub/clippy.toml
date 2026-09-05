@@ -1,0 +1,8 @@
+# Overrides the workspace `clippy.toml` for this example only. Must match this crate's own
+# `Cargo.toml` [package].rust-version — this example depends on `reliar-store-postgres`, which
+# requires 1.94 (`sqlx` 0.9, ADR 0025), six releases above the workspace floor of 1.88.
+msrv = "1.94"
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

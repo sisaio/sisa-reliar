@@ -36,6 +36,10 @@ serde_json = { workspace = true, optional = true }
 proptest.workspace = true
 serde_json.workspace = true
 criterion.workspace = true
+# `#[tokio::test]` for `publisher_batch_default_is_positional.rs` (moved from `reliar-outbox`,
+# ADR 0032) — `Publisher::publish` is a native async fn in a trait, so exercising the default
+# `publish_batch` loop needs a runtime even though every future here resolves immediately.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[bench]]
 name = "serialization"

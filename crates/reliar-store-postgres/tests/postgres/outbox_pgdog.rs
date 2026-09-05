@@ -41,7 +41,7 @@ use testcontainers::{GenericImage, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 
 // Equal to `deploy/compose/docker-compose.yaml`'s pin by decision #31, enforced by ci.yaml's
-// "compose and the provider tests pin the same images" step — bump both together.
+// "compose and the tests pin the same images" step — bump both together.
 const PGDOG_IMAGE: &str = "ghcr.io/pgdogdev/pgdog";
 const PGDOG_TAG: &str = "v0.1.46";
 

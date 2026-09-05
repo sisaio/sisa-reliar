@@ -14,8 +14,9 @@ it, especially for the areas SRS §45 protects.
   `Superseded by NNNN`.
 - Format: `# ADR NNNN — Title` · **Status** (with date) · **Context** · **Decision** ·
   **Consequences** · **Alternatives considered**.
-- The **frozen Phase-1 public contract** lives at `../architecture/phase1-contract.md`; the crate map
-  at `../architecture/overview.md`.
+- The **frozen public contracts** live at `../architecture/phase1-contract.md` (core, outbox,
+  Postgres) and `../architecture/phase2-contract.md` (the NATS transport); the crate map at
+  `../architecture/overview.md`.
 
 ## Index
 
@@ -46,6 +47,14 @@ it, especially for the areas SRS §45 protects.
 | [0023](0023-persisted-dead-reason.md) | `dead_reason` is a persisted `text` column with a stable codec | Accepted 2026-09-04 | §19.1, §23, §24.1, §43.A.20 |
 | [0024](0024-msrv-1-88-and-msrv-policy.md) | Workspace MSRV rises to 1.88, and the policy that governs it | Accepted 2026-09-04 | §7, §40, §41, §44 |
 | [0025](0025-provider-crate-msrv.md) | Provider crates may carry their driver's MSRV; pure crates may not | Accepted 2026-09-04 | §7.1, §40, §44 |
+| [0026](0026-nats-header-projection.md) | The NATS header projection and the decode policy | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** case-insensitive framework/custom collision · **B** `InvalidHeaderValue` names the header · **C** an empty required header value is `MalformedHeader`) | §12, §12.3, §14–§16, §17.1 |
+| [0027](0027-subject-resolution-is-a-transport-strategy.md) | Subject resolution is a transport-side strategy, not envelope metadata | Accepted 2026-09-04 | §12, §16, §18 |
+| [0028](0028-jetstream-ack-is-the-only-publish-path.md) | JetStream with an awaited ack is the only publish path | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** the ack deadline is `min(publish_timeout, Context::timeout)`; the pipeline depth stays ≤ the host's `max_ack_inflight`) and 2026-09-05 (**A corrected** `backpressure_on_inflight` defaults to `true` · **B** `max_in_flight` → `batch_pipeline_depth`) | §19.4, §21, §22, §22.1, §32 |
+| [0029](0029-stream-and-connection-ownership.md) | The application owns the NATS connection and the stream | Accepted 2026-09-04 | §3.12, §7.2, §30, §31, §35 |
+| [0030](0030-nats-publish-error-classification.md) | `NatsPublishError` classifies per variant and leaks nothing | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `max_payload = Some(0)` is a construction error · **B** the `Broker` `warn` logs the kind name, never the `async-nats` `Display`), corrected 2026-09-05 (the size guard saves no round-trip) | §17.1, §19.4, §23, §33 |
+| [0031](0031-nats-dependency-and-test-substrate.md) | The `async-nats` pin, its minimal features, and the NATS test substrate | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `tokio` is a runtime dependency; readiness is the JetStream retry loop) and 2026-09-05 (**B** the pin gate covers `tests/system`; §6 becomes a CI gate) | §7.1, §8.2, §40–§43 |
+| [0032](0032-publisher-and-shared-primitives-in-core.md) | `Publisher`, `Classify`, `FailureKind` and `SettingsError` belong to `reliar-core` | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** a `tokio` dev-dependency in `reliar-core` is inside this ADR) | §18, §19.4, §23, §36, §43.B |
+| [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxRouter` + the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` capability | Accepted 2026-09-05 | §7, §12, §18, §19.6, §20, §22, §23, §33, §36 |
 
 ## Numbering note
 
@@ -71,6 +80,29 @@ an advisory and the MSRV floor was written down. It supersedes ADR 0022's `rust-
 keep the workspace floor so that using `reliar-core`/`reliar-outbox` with your own store does not
 cost you sqlx's toolchain.
 
+**0026–0031** open **Phase 2** (2026-09-04, story RELIAR-2): the five decisions SRS §45 requires
+before a transport ships — header projection, subject-strategy placement, the JetStream-ack
+requirement, per-variant error classification, stream/connection ownership — plus 0031 for the
+platform side (the `async-nats` pin and feature set, the JetStream test substrate, and where the
+end-to-end test package lives). The frozen surface they define is
+`../architecture/phase2-contract.md`; none of them changes `reliar-core` or `reliar-outbox`.
+
+**0032** (2026-09-05, story RELIAR-2) relocates `Publisher`, `Classify`, `FailureKind` and
+`SettingsError` from `reliar-outbox` to `reliar-core` and states the kind test that keeps core from
+becoming the catch-all SRS §18 forbids. It changes no signature and adds nothing to core's
+dependency graph; it lets `reliar-transport-nats` drop `reliar-outbox` entirely, and it amends both
+`../architecture/phase1-contract.md` (§3.5, §3.7) and the frozen
+`../architecture/phase2-contract.md` (§1, §4).
+
+**0033** (2026-09-05, story RELIAR-43) adds the routing publisher: one call that either stages a
+message in the outbox — inside the caller's transaction — or publishes it straight to the transport,
+decided by `RoutingSettings` (`enabled`, a routed-type list, empty = all). It lives in
+`reliar-outbox` because it is outbox mechanics under 0032's kind test; the caller's transaction
+reaches it as an opaque type parameter (`OutboxEnqueueIn<Cx>`), so no SQLx type enters the crate; the
+router serializes once so the wire bytes do not depend on the route; and it deliberately does **not**
+implement `Publisher`, which would let a host feed the outbox back into itself. Its frozen surface is
+`../architecture/routing-publisher-contract.md`.
+
 Everything the review queued is recorded; nothing was dropped. Decisions the SRS resolved without
 needing an ADR (promoting `tenant_id`/`expires_at`, constraint/index naming, the `deploy/` layout,
 the clock split, facade timing) are specified in the SRS text and referenced from the ADRs above.
@@ -80,6 +112,10 @@ the clock split, facade timing) are specified in the SRS text and referenced fro
 | If you are changing… | Read first |
 |---|---|
 | a trait signature or bound | `../architecture/phase1-contract.md`, then 0001, 0008 |
+| whether an item belongs in `reliar-core` or a feature crate | 0032, then 0027 |
+| whether a message goes through the outbox or straight to the transport | 0033, then `../architecture/routing-publisher-contract.md` |
+| the NATS mapping, subjects, or the publisher | `../architecture/phase2-contract.md`, then 0026–0030 |
+| the `async-nats` pin or the NATS test substrate | 0031, then 0021, 0022 |
 | the envelope, metadata, or headers | 0003, 0004, 0010, 0011, 0012 |
 | retry, dead state, leases, or timing | 0006, 0007, 0009, 0014 |
 | the schema, indexes, or migrations | 0012, 0015, 0016, 0017, 0018, 0023 |

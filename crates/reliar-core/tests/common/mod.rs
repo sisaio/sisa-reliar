@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 //! Shared test fixtures for `reliar-core`'s public-API tests.
 
-use reliar_core::Message;
+use bytes::Bytes;
+use reliar_core::{Envelope, Message, SerializedEnvelope};
 use serde::{Deserialize, Serialize};
 
 /// A minimal message body used across scenario files.
@@ -26,4 +27,11 @@ pub(crate) struct OrderCreatedAgain {
 impl Message for OrderCreatedAgain {
     const TYPE: &'static str = "orders.created";
     const VERSION: u16 = 1;
+}
+
+/// A minimal serialized envelope for tests that only need *an* envelope, not a specific body.
+pub(crate) fn serialized_envelope() -> SerializedEnvelope {
+    Envelope::builder(OrderCreated { order_id: 1 })
+        .build()
+        .map_body(|_| Bytes::from_static(b"{}"))
 }

@@ -8,8 +8,7 @@
 
 use core::fmt;
 
-use reliar_core::MessageId;
-use reliar_outbox::{Classify, FailureKind};
+use reliar_core::{Classify, FailureKind, MessageId};
 
 /// A failure of a [`crate::PostgresOutboxStore`] `OutboxStore`/`OutboxDeadLetters` *call* —
 /// never a property of one row's content. Row-content problems surface as

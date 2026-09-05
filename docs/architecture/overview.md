@@ -6,8 +6,27 @@ is no DI container, no ambient configuration, and nothing starts a thread on its
 - **Baseline:** `../srs.md` v1.1 (approved 2026-09-04).
 - **Decisions:** `../decisions/README.md`.
 - **Frozen Phase-1 API:** `phase1-contract.md`.
+- **Frozen Phase-2 API** (the NATS transport): `phase2-contract.md`. It adds one crate,
+  `reliar-transport-nats` (→ `reliar-core`, plus `async-nats`).
+- **Frozen routing-publisher API** (v0.2): `routing-publisher-contract.md`, decided by ADR 0033. It
+  adds no crate — `reliar-outbox` gains `OutboxRouter` and the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>`
+  capability, `reliar-store-postgres` gains one impl.
+- **Amended 2026-09-05 by ADR 0032:** `Publisher`, `Classify`, `FailureKind` and `SettingsError`
+  moved from `reliar-outbox` to `reliar-core`, signatures unchanged. Publication is a shared
+  capability, not an outbox concept — so a transport (and, in Phase 3, `reliar-messaging`) depends
+  on core alone. The map and rules below reflect the move.
 
-## Crate map (Phase 1)
+## Phase 2 status
+
+`reliar-transport-nats` (S1–S3, RELIAR-32/33/34) is complete: `NatsEnvelopeMapper` + header
+projection (§2), `SubjectResolver`/`PrefixSubjects`/`DestinationSubjects` (§3), `NatsPublisher`
+(§4) publishing through `JetStream` with an awaited ack (ADR 0028) and never owning a connection or
+a stream (ADR 0029). The phase's proof is `tests/system`'s `e2e` scenarios — a migrated Postgres
+outbox drained by `OutboxDispatcher<PostgresOutboxStore, NatsPublisher<PrefixSubjects>>` into a real
+`JetStream` stream — plus `examples/nats-pub-sub` and `docs/guides/nats.md`. See
+`phase2-contract.md` §6 for the slice breakdown.
+
+## Crate map (Phase 1 + Phase 2)
 
 ```text
               ┌───────────────────────────────────────────────┐
@@ -16,24 +35,31 @@ is no DI container, no ambient configuration, and nothing starts a thread on its
               │   Message · MessageType · ContentType         │  (+ serde_json behind `json`)
               │   Metadata · Headers · ids                    │
               │   Serializer · EnvelopeMapper                 │
+              │   Publisher · Classify · FailureKind          │  (ADR 0032)
+              │   SettingsError                               │
               └───────────────────────────────────────────────┘
                         ▲                        ▲
                         │                        │
   ┌─────────────────────┴─────────┐    ┌─────────┴──────────────────────┐
-  │ reliar-outbox                 │    │ (Phase 2) reliar-transport-*   │
-  │   OutboxStore · Publisher     │◀───┤   Publisher + EnvelopeMapper   │
-  │   OutboxDeadLetters           │    └────────────────────────────────┘
-  │   RetryPolicy · Ordering      │
-  │   OutboxDispatcher<S,P,M,R>   │
-  │   OutboxMetrics · settings    │
-  │   test-support fakes          │
-  └───────────────────────────────┘
-                        ▲
-  ┌─────────────────────┴─────────┐
-  │ reliar-store-postgres         │  sqlx · Postgres 18+
-  │   PostgresOutboxStore         │  migrations/ · migrate() · .sqlx/
-  │   enqueue(&mut tx, envelope)  │
-  └───────────────────────────────┘
+  │ reliar-outbox                 │    │ reliar-transport-nats          │  async-nats (jetstream feature only)
+  │   OutboxStore                 │    │   NatsEnvelopeMapper           │
+  │   OutboxDeadLetters           │    │   SubjectResolver              │
+  │   RetryPolicy · Ordering      │    │   NatsPublisher (JetStream)    │
+  │   OutboxDispatcher<S,P,M,R>   │    └──────────────────────────────┬─┘
+  │   OutboxMetrics · settings    │                                   │
+  │   test-support fakes          │                                   │
+  └───────────────────────────────┘                                   │
+                        ▲                                             │
+  ┌─────────────────────┴─────────┐ sqlx · Postgres 18+               │
+  │ reliar-store-postgres         │ migrations/ · migrate() · .sqlx/  │
+  │   PostgresOutboxStore         │                                   │
+  │   enqueue(&mut tx, envelope)  │                                   │
+  └─────────────────────┬─────────┘                                   │
+                        └────────────────────┬────────────────────────┘
+                              ┌──────────────┴────────────────────────┐
+                              │ tests/system (publish=false)          │  the only place both providers meet
+                              │   e2e: outbox → NATS proof            │  (dev-dependencies only, ADR 0031 §6)
+                              └───────────────────────────────────────┘
 ```
 
 ## The dependency rule (inward only)
@@ -42,9 +68,15 @@ is no DI container, no ambient configuration, and nothing starts a thread on its
   concepts** — a Kafka partition key, a Rabbit exchange or a NATS subject option belongs to a
   transport crate, never to `Metadata`. Enforced in CI by `cargo tree -p reliar-core -e normal`.
 - **Abstraction crates depend only on core.** `reliar-outbox` knows nothing about Postgres or any
-  broker; adding a transport in Phase 2 touches no file under `reliar-outbox/src/`.
-- **Providers never depend on each other.** `reliar-store-postgres` implements `reliar-outbox`'s
-  traits and imports no other provider.
+  broker; adding a transport in Phase 2 introduced no NATS symbol under `reliar-outbox/src/`.
+- **A provider depends on core directly, and on an abstraction crate only when it implements a
+  trait that crate owns** (ADR 0032). `reliar-store-postgres` implements `OutboxStore`, so it
+  depends on `reliar-outbox`. `reliar-transport-nats` implements only core traits (`Publisher`,
+  `EnvelopeMapper`), so it depends on `reliar-core` alone — no `reliar-outbox` edge in any
+  dependency kind.
+- **Providers never depend on each other.** `reliar-store-postgres` imports no transport;
+  `reliar-transport-nats` imports no store. `tests/system` is the one place both meet, and only as **dev**-dependencies of
+  a `publish = false` test package — never a normal dependency edge between the two (ADR 0031 §6).
 - **The host is the only place a concrete pair is named:**
   `OutboxDispatcher<PostgresOutboxStore, NatsPublisher>`. Everything is monomorphized; no `Box<dyn>`
   appears on a hot path (ADR 0001).
@@ -126,7 +158,9 @@ maintenance method on it. Reliar starts no timer other than the dispatcher's own
 | Concern | Home |
 |---|---|
 | Envelope, metadata, headers, ids, serialization | `reliar-core` |
-| Store/publisher traits, retry, dispatcher, settings, metrics hook, fakes | `reliar-outbox` |
+| The `Publisher` contract, `Classify`/`FailureKind`, `SettingsError` | `reliar-core` (ADR 0032) |
+| `OutboxStore`, retry, dispatcher, outbox settings, metrics hook, fakes | `reliar-outbox` |
 | Schema, migrations, SQL, `enqueue`, `search_path` verification | `reliar-store-postgres` |
-| Transport headers, subject/exchange/partition resolution | a transport crate (Phase 2) |
-| Exporters, config precedence, pool ownership, maintenance scheduling | **the host application** |
+| Transport headers, subject resolution, `JetStream` publish + ack | `reliar-transport-nats` |
+| The cross-provider outbox→NATS end-to-end proof | `tests/system` |
+| Exporters, config precedence, pool/connection/stream ownership, maintenance scheduling | **the host application** |

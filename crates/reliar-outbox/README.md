@@ -1,9 +1,9 @@
 # reliar-outbox
 
-The storage-agnostic transactional outbox: the `OutboxStore`/`OutboxDeadLetters`/`Publisher`
-capability traits, the request/result types that cross their boundary, a pure `RetryPolicy`, the
-feature's settings (`OutboxSettings`), the `OutboxMetrics` hook, and the `OutboxDispatcher` worker
-loop (SRS §19–§26).
+The storage-agnostic transactional outbox: the `OutboxStore`/`OutboxDeadLetters` capability traits
+(plus `reliar_core::Publisher`, re-exported here for convenience), the request/result types that
+cross their boundary, a pure `RetryPolicy`, the feature's settings (`OutboxSettings`), the
+`OutboxMetrics` hook, and the `OutboxDispatcher` worker loop (SRS §19–§26).
 
 Depends only on `reliar-core` — no `sqlx`, no Postgres, no broker client. A provider crate
 (`reliar-store-postgres`) implements the traits here; this crate never depends on one.
@@ -54,8 +54,8 @@ See `../../docs/architecture/outbox.md` for the full delivery-path walkthrough a
   `AcquiredBatch`, `CompletedMessage`, `FailedMessage`, `FailureOutcome`, `DeadReason`,
   `MessageRef`, `PurgeRequest`/`PurgeReport`, `OutboxStats`, `DeadQuery`/`DeadLetterPage`,
   `PoisonedRow`), plus `OutboxRecord` and its builder.
-- `Publisher` + `Classify`/`FailureKind` — a publisher's error carries its own transient/permanent
-  verdict; the dispatcher never guesses.
+- `reliar_core::Publisher` (re-exported here) + `Classify`/`FailureKind` — a publisher's error
+  carries its own transient/permanent verdict; the dispatcher never guesses.
 - `RetryPolicy` and the default `ExponentialBackoff`.
 - `OutboxDispatcher`/`OutboxDispatcherBuilder`/`DispatchError` — bounded-concurrency claim →
   publish → batch `complete`/`fail`, half-lease `extend_lease` renewal, a `stats_interval` tick

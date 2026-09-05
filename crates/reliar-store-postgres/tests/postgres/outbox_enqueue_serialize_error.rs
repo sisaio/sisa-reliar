@@ -5,8 +5,7 @@
 use crate::common;
 
 use crate::common::{AlwaysFailingSerializer, OrderCreated};
-use reliar_core::Envelope;
-use reliar_outbox::{Classify, FailureKind};
+use reliar_core::{Classify, Envelope, FailureKind};
 use reliar_store_postgres::{EnqueueError, PostgresOutboxSettings, PostgresOutboxStore};
 
 async fn a_failing_serializer_yields_enqueue_error_serialize_before_touching_the_database() {

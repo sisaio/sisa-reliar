@@ -1,19 +1,20 @@
-//! Publication and failure classification (SRS §19.4, §24.1, ADR 0008).
+//! Publication (SRS §19.4, §24.1, ADR 0008, ADR 0032).
 
-use reliar_core::SerializedEnvelope;
+use crate::SerializedEnvelope;
+use crate::failure::Classify;
 
 /// The wire side of the outbox. One provider implements this per transport.
 ///
-/// A publish **timeout** classifies as [`FailureKind::Transient`]. A payload the broker rejects
-/// as too large classifies as [`FailureKind::Permanent`] — retrying forever cannot help
-/// (SRS §24.1).
+/// A publish **timeout** classifies as [`crate::FailureKind::Transient`]. A payload the broker
+/// rejects as too large classifies as [`crate::FailureKind::Permanent`] — retrying forever
+/// cannot help (SRS §24.1).
 pub trait Publisher: Send + Sync {
     /// The error a publish attempt can fail with. Must self-classify via [`Classify`] so the
     /// dispatcher can decide retry vs. dead without inspecting transport internals.
     type Error: std::error::Error + Send + Sync + 'static + Classify;
 
     /// Publishes one envelope. Never retried by the publisher itself — retry is the
-    /// dispatcher's and [`crate::RetryPolicy`]'s job.
+    /// dispatcher's and `RetryPolicy`'s job (`reliar-outbox`).
     fn publish(
         &self,
         envelope: &SerializedEnvelope,
@@ -37,22 +38,4 @@ pub trait Publisher: Send + Sync {
             out
         }
     }
-}
-
-/// Implemented by every [`Publisher::Error`] and [`crate::OutboxStore::Error`] so the dispatcher
-/// can decide retry vs. dead without a downcast. Carried **by the error type**, not by the
-/// publisher: the error value is what crosses a `JoinSet` boundary into the dispatcher, so it
-/// must carry its own verdict (ADR 0008).
-pub trait Classify {
-    /// Whether the failure this error represents can succeed on retry.
-    fn kind(&self) -> FailureKind;
-}
-
-/// Whether a failure is worth retrying.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FailureKind {
-    /// May succeed if retried (a timeout, a connection blip, a lock conflict).
-    Transient,
-    /// No retry can fix it (an oversized payload, an unresolvable schema).
-    Permanent,
 }

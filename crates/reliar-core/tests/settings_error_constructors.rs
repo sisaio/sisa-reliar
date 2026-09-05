@@ -1,10 +1,12 @@
-//! `SettingsError::{parse, out_of_range, key}` — public constructors so a provider crate (e.g.
-//! `reliar-store-postgres`) can build this type for its own `from_env` instead of shipping a
-//! parallel, unrelated error (phase1-contract.md §7 row I3, ADR 0019).
+//! `SettingsError::{parse, out_of_range, key}` — public constructors so a crate other than the
+//! one defining a given `Settings` type (e.g. `reliar-store-postgres`) can build this type for
+//! its own `from_env` instead of shipping a parallel, unrelated error (contract §7 row I3,
+//! ADR 0019, ADR 0032). Moved here from `reliar-outbox` when `SettingsError` moved to
+//! `reliar-core`.
 
 use std::error::Error;
 
-use reliar_outbox::SettingsError;
+use reliar_core::SettingsError;
 
 #[test]
 fn parse_builds_a_parse_error_naming_the_key_and_expected_shape() {
