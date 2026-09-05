@@ -162,7 +162,10 @@ pub(crate) fn check_disjoint(
 pub enum RouteKind {
     /// Staged in the outbox, inside the caller's transaction.
     Outbox,
-    /// Published straight to the transport, outside any transaction.
+    /// Published straight to the transport — not part of the caller's transaction (no statement
+    /// is issued on it), but when called inside `in_transaction`, the transaction stays open for
+    /// the duration of the transport call, so a direct publish there still holds a database
+    /// transaction across network I/O.
     Direct,
 }
 

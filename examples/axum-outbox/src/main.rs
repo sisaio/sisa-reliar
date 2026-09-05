@@ -140,6 +140,12 @@ async fn create_order(
     serialized.metadata.delivery.content_type = ser.content_type().clone();
     let message_id = serialized.id;
 
+    // If the routing rule ever routed `orders.created` direct, this call would publish straight
+    // to the transport while `tx` (opened above, for the `orders` insert and a routed publish) is
+    // still open — not atomic with it, and not undone by a later rollback. Because this handler's
+    // transaction exists for the outbox insert too, a direct-routed type still has to be published
+    // inside it here; a handler whose *only* reason to hold a transaction is the outbox should
+    // instead publish direct-routed types before `begin` or after `commit`.
     state
         .outbox
         .in_transaction(&mut tx)

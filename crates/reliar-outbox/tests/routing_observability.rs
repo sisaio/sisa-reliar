@@ -9,7 +9,8 @@ mod common;
 
 use reliar_core::{Envelope, Publisher as _};
 use reliar_outbox::{
-    InMemoryOutboxStore, InMemoryTransaction, OutboxPolicy, OutboxPublisher, RecordingPublisher,
+    InMemoryOutboxStore, InMemoryTransaction, OutboxPolicy, OutboxPublisher, PublishStep,
+    RecordingPublisher, ScriptedPublisher,
 };
 
 const SECRET_HEADER_VALUE: &str = "RELIAR_OUTBOX_HEADER_VALUE_MUST_NEVER_APPEAR_IN_A_LOG";
@@ -87,6 +88,72 @@ async fn direct_route_records_route_equals_direct() {
     assert!(
         !text.contains("route=\"outbox\""),
         "a direct publish must not also record route=\"outbox\":\n{text}"
+    );
+}
+
+/// A failed stage still records `route` on the span: the field is written from the decision, not
+/// from a successful outcome, so a store rejection must not leave `route` unset (PR review,
+/// Copilot). Mutation: recording `route` *after* `staging.stage(..)` instead of before it makes
+/// this assertion red, because `?` returns before the record call ever runs.
+#[tokio::test]
+async fn failed_stage_still_records_route_on_the_span() {
+    let (recorder, _guard) = common::RecordingSubscriber::install();
+
+    let store = InMemoryOutboxStore::default();
+    store.fail_next_enqueue(1);
+    let publisher = RecordingPublisher::default();
+    let outbox = OutboxPublisher::new(store, publisher, OutboxPolicy::default());
+
+    let envelope = Envelope::builder(common::OrderCreated { order_id: 1 }).build();
+    let serialized = common::serialize(envelope);
+
+    let mut tx = InMemoryTransaction;
+    outbox
+        .in_transaction(&mut tx)
+        .publish(&serialized)
+        .await
+        .expect_err("the injected store failure surfaces as RouteError::Stage");
+
+    let text = recorder.text();
+    assert!(
+        text.contains("route=\"outbox\""),
+        "a failed stage must still record route=\"outbox\" on the span:\n{text}"
+    );
+}
+
+/// A failed transport publish still records `route` on the span, on both `publish` (routed
+/// through [`ScopedOutboxPublisher`], here configured direct) and [`OutboxPublisher::publish_direct`]
+/// — same mutation as above, on the direct branch.
+#[tokio::test]
+async fn failed_transport_publish_still_records_route_on_the_span() {
+    let (recorder, _guard) = common::RecordingSubscriber::install();
+
+    let store = InMemoryOutboxStore::default();
+    let publisher = ScriptedPublisher::always(PublishStep::Permanent);
+    let policy =
+        OutboxPolicy::from_settings(&reliar_outbox::OutboxSettings::default().enabled(false))
+            .expect("valid settings");
+    let outbox = OutboxPublisher::new(store, publisher, policy);
+
+    let envelope = Envelope::builder(common::OrderCreated { order_id: 1 }).build();
+    let serialized = common::serialize(envelope);
+
+    let mut tx = InMemoryTransaction;
+    outbox
+        .in_transaction(&mut tx)
+        .publish(&serialized)
+        .await
+        .expect_err("the scripted permanent failure surfaces as RouteError::Publish");
+    outbox
+        .publish_direct(&serialized)
+        .await
+        .expect_err("the scripted permanent failure surfaces as DirectPublishError::Publish");
+
+    let text = recorder.text();
+    assert_eq!(
+        text.matches("route=\"direct\"").count(),
+        2,
+        "both the scoped and the direct call must record route=\"direct\" even on failure:\n{text}"
     );
 }
 

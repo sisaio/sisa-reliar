@@ -237,6 +237,12 @@ async fn main() -> Result<()> {
         .build(),
     )
     .context("serializing the audit event")?;
+    // Whichever way `audit.logged` routes (env-controlled, see the module doc above): if it goes
+    // direct, this publish is not atomic with the transaction opened just above it — the message
+    // reaches NATS immediately, and a later rollback would not undo it. A production call site
+    // that only opens the transaction for the outbox should publish direct-routed types before
+    // `begin` (or after `commit`) instead of wrapping them in one it does not need; this example
+    // keeps one call site for both routes on purpose, to show the same line works either way.
     let audit_route = outbox.policy().decide(&audit.message_type);
     let mut tx = pool.begin().await.context("begin transaction")?;
     outbox

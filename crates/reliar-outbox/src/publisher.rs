@@ -220,6 +220,7 @@ where
         );
         async {
             let route = self.policy.decide(&envelope.message_type);
+            tracing::Span::current().record("route", route.as_str());
             if route.is_outbox() {
                 return Err(DirectPublishError::TransactionRequired {
                     message_type: envelope.message_type.clone(),
@@ -230,7 +231,6 @@ where
                 .await
                 .map_err(DirectPublishError::Publish)?;
             self.metrics.routed(route, &envelope.message_type);
-            tracing::Span::current().record("route", route.as_str());
             Ok(())
         }
         .instrument(span)
@@ -320,8 +320,11 @@ where
     /// database transaction. Configure a publisher-side timeout, and prefer publishing
     /// direct-routed types before opening (or after committing) the transaction.
     ///
-    /// Publishes on one scoped value are **serialized**: a transaction is not a concurrency
-    /// point.
+    /// The transaction borrow is held only for the duration of a **staging** call
+    /// (`tx.lock().await` around `staging.stage(..)`): concurrent routed publishes on one scoped
+    /// value serialize on that lock, because a transaction is not a concurrency point. A direct
+    /// publish never takes the lock, so concurrent direct publishes run in parallel, bounded only
+    /// by whatever concurrency `P: Publisher` itself allows.
     ///
     /// # Errors
     ///
@@ -332,7 +335,9 @@ where
     /// envelope, in order. A positional `Ok` on a routed entry means *the statement was
     /// accepted*, **not** that the message is durable — durability is the caller's `commit`, and
     /// one `Err(RouteError::Stage(_))` aborts the whole transaction, invalidating every `Ok`
-    /// before it.
+    /// before it. An `Err(RouteError::Publish(_))` is different: a direct publish never issues a
+    /// statement on the transaction, so it neither aborts it nor invalidates any earlier `Ok` —
+    /// the staged entries before and after it remain valid if the caller commits.
     fn publish(
         &self,
         envelope: &SerializedEnvelope,
@@ -346,6 +351,7 @@ where
         async move {
             // The only rule call in this crate.
             let route = self.owner.policy.decide(&envelope.message_type);
+            tracing::Span::current().record("route", route.as_str());
             match route {
                 RouteKind::Outbox => {
                     let mut guard = self.tx.lock().await;
@@ -364,7 +370,6 @@ where
                 }
             }
             self.owner.metrics.routed(route, &envelope.message_type);
-            tracing::Span::current().record("route", route.as_str());
             Ok(())
         }
         .instrument(span)

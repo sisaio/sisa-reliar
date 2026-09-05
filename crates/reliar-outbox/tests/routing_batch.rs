@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use reliar_core::{Envelope, MessageId, Publisher as _, SerializedEnvelope};
 use reliar_outbox::{
     InMemoryOutboxStore, InMemoryStoreError, InMemoryTransaction, OutboxPolicy, OutboxPublisher,
-    OutboxSettings, OutboxStaging, RecordingPublisher,
+    OutboxSettings, OutboxStaging, PublishStep, RecordingPublisher, ScriptedPublisher,
 };
 
 #[tokio::test]
@@ -119,6 +119,55 @@ async fn a_mid_batch_stage_failure_leaves_earlier_entries_ok() {
     assert!(store.inner.record(first.id).is_some());
     assert!(store.inner.record(second.id).is_none());
     assert!(store.inner.record(third.id).is_some());
+}
+
+/// A mid-batch **direct** (transport) failure is different from a mid-batch **stage** failure
+/// (`a_mid_batch_stage_failure_leaves_earlier_entries_ok`, above): a `RouteError::Publish` never
+/// touches the transaction, so the routed entries staged before *and* after it stay valid — unlike
+/// a `RouteError::Stage`, which the contract says typically aborts the whole transaction (PR
+/// review, CR6).
+#[tokio::test]
+async fn a_mid_batch_direct_publish_failure_leaves_staged_entries_intact() {
+    let store = InMemoryOutboxStore::default();
+    // `b` is the only disallowed type — everything else (including `a` and `c`) stays routed.
+    let settings = OutboxSettings::default()
+        .disallowed_types(
+            reliar_outbox::MessageTypeNames::try_from_iter("test", ["b"]).expect("valid"),
+        )
+        .expect("no overlap");
+    let policy = OutboxPolicy::from_settings(&settings).expect("valid settings");
+
+    let first = common::serialize(Envelope::builder(common::TypeA).build());
+    let second = common::serialize(Envelope::builder(common::TypeB).build());
+    let third = common::serialize(Envelope::builder(common::TypeC).build());
+
+    // Only the direct-routed `second` is scripted to fail; unlisted ids default to `Ok`.
+    let publisher = ScriptedPublisher::keyed([(second.id, PublishStep::Permanent)]);
+    let outbox = OutboxPublisher::new(store.clone(), publisher, policy);
+
+    let mut tx = InMemoryTransaction;
+    let results = outbox
+        .in_transaction(&mut tx)
+        .publish_batch(&[first.clone(), second.clone(), third.clone()])
+        .await;
+
+    assert!(results[0].is_ok(), "the first (staged) entry succeeds");
+    assert!(
+        results[1].is_err(),
+        "the direct-routed entry's transport publish fails"
+    );
+    assert!(results[2].is_ok(), "the third (staged) entry still runs");
+
+    // The direct failure never issued a statement on the transaction: both staged entries — the
+    // one before *and* the one after the failing direct publish — are still present.
+    assert!(
+        store.record(first.id).is_some(),
+        "the staged entry before the direct failure is unaffected"
+    );
+    assert!(
+        store.record(third.id).is_some(),
+        "the staged entry after the direct failure is unaffected too"
+    );
 }
 
 /// Wraps [`InMemoryOutboxStore`] to prove `publish_batch` stages **sequentially**: panics if a

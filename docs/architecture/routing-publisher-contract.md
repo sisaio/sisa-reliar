@@ -612,9 +612,21 @@ where
 
 **`publish_batch` semantics (inherited default, deliberately).** Results stay positional, one per
 envelope, in order. A positional `Ok` on a routed entry means *the statement was accepted*, **not**
-that the message is durable: durability is the caller's `commit`, and one `Err(RouteError::Stage(_))`
-aborts the whole transaction, invalidating every `Ok` before it. Rustdoc on the impl says exactly
-that; test R22 proves it.
+that the message is durable: durability is the caller's `commit`. Which earlier `Ok`s survive a
+mid-batch failure depends on **which** error it was, and the two are not symmetric:
+
+- **`Err(RouteError::Stage(_))`** — the staging statement failed, so PostgreSQL has typically
+  aborted the caller's transaction. Every earlier routed `Ok` in the batch is invalidated with it:
+  those rows never become durable, whatever the caller does next. This is the only failure that
+  reaches back and unmakes earlier entries.
+- **`Err(RouteError::Publish(_))`** — the transport rejected a *direct* entry. The transaction is
+  untouched and still committable, and every earlier staged row remains staged: commit and they are
+  durable, roll back and none of them is. Only the entry that failed is lost, and the caller may
+  retry it — through the transport's own path, since a positional `Ok` is not being revoked here.
+
+Rustdoc on the impl states both cases in exactly those terms; test R22 proves the `Stage` case
+(earlier entries not durable after the rollback) and its `Publish` twin proves that a transport
+failure leaves the staged rows intact through a commit.
 
 **Interior mutability.** `Publisher::publish` takes `&self`, staging needs `&mut Tx`, so the view
 holds `tokio::sync::Mutex<&'a mut Tx>` and reborrows through the guard (`stage(&mut **guard, …)`).
@@ -641,8 +653,9 @@ OutboxPublisher::publish_direct
 
 There is **no serialization step** — that was §4.3 before Amendment D and it is gone (ADR 0033
 Amendment D §3). Step 1 is a single expression, and there is no other `if enabled`, `contains`, or
-list access in the module. A reviewer can grep: `enabled`/`allowed_types`/`disallowed_types` must not
-appear in `publisher.rs` at all.
+list access in the module. A reviewer can grep: no `enabled`, `allowed_types` or `disallowed_types`
+identifier appears in `publisher.rs` outside rustdoc (§10, check 1) — prose naming a settings field
+is fine; reading one here is not.
 
 **What the caller does instead**, once, before either path — the same three lines a `NatsPublisher`
 user already writes:
@@ -813,7 +826,8 @@ Tests come in **two layers**, and that separation is the point of ADR 0033 Amend
 it — neither of them "publisher tests stay green":
 
 1. *The grep rule.* `publisher.rs` contains no `enabled`, `allowed_types` or `disallowed_types`
-   identifier. It reaches the table only through `OutboxPolicy::decide`.
+   identifier outside rustdoc — the module may *describe* the rule, it may not evaluate it. It
+   reaches the table only through `OutboxPolicy::decide`.
 2. *The computed expectation.* `routing_delegates_to_the_policy.rs` (R21) derives every assertion
    from `outbox.policy().decide(&message_type)` — never from a route written into the test.
 
@@ -864,7 +878,7 @@ No inline `#[cfg(test)]`. Envelopes are serialized by the test itself (§4.2's t
 | R15 | D6 | `tests/system` (e2e) | Routed type: scoped `publish` + commit → row in `outbox` → dispatcher → message on the stream. Direct type: on the stream immediately, `SELECT count(*) FROM outbox` for that id is `0`. | carries over |
 | R16 | D6 | `tests/system` | Direct path is not transactional: scoped `publish` of a direct type, then **roll back** — the message is still on the stream. The honest-guarantee test; name it so nobody "fixes" it. | carries over |
 | R17 | D7 | doc | `cargo doc -D warnings`; the rustdoc doctest compiles a fake-backed example showing the caller's serialization block and both routes. | carries over |
-| **R22** | D6 | `routing_batch.rs` | **New.** `publish_batch` through the scoped view: results are **positional** (one per envelope, in order, mixed routes preserved), staging happens **sequentially**, and a mid-batch `Err(RouteError::Stage(_))` still returns `Ok` for earlier entries — with the test asserting that those entries are **not durable** after a rollback. Proves §4.1's "positional ≠ durable" note rather than assuming it. | new |
+| **R22** | D6 | `routing_batch.rs` | **New.** `publish_batch` through the scoped view: results are **positional** (one per envelope, in order, mixed routes preserved), staging happens **sequentially**, and a mid-batch `Err(RouteError::Stage(_))` still returns `Ok` for earlier entries — with the test asserting that those entries are **not durable** after a rollback. Its twin asserts the asymmetry: a mid-batch `Err(RouteError::Publish(_))` leaves the transaction committable and every earlier staged row **durable after the commit**. Proves §4.1's "positional ≠ durable" note, both halves, rather than assuming it. | new |
 | **R23** | D6 | `routing_is_a_publisher.rs` (+ a postgres-side twin) | **New.** The scoped view **is** a `Publisher`: a generic `async fn f<P: Publisher>(&P, &SerializedEnvelope)` accepts it and both `publish` and `publish_batch` work through it; the future is asserted `Send` from a **non-`'static`** transaction scope. The postgres twin runs the same assertion over a real `Transaction<'_, Postgres>` (this is what R14a becomes). | new |
 | **R24** | — | `routing_is_a_publisher.rs` (compile-fail note) or doc | **New.** The guard: `OutboxPublisher` does **not** implement `Publisher`, and the scoped view is neither `'static` nor `Clone`, so neither can be passed to `OutboxDispatcher::builder`. A `trybuild`-style compile-fail case if the crate already has one; otherwise a documented static assertion (`fn _assert_not_static` shape) plus the rustdoc statement. Do not add a new dev-dependency for this. | new |
 

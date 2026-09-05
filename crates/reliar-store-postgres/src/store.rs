@@ -316,8 +316,8 @@ async fn insert_staged<T>(
 /// Reads the caller's current `search_path`, sets it transaction-locally
 /// (`set_config(.., true)` — dies with the caller's `COMMIT`/`ROLLBACK`) to put `schema` first,
 /// and returns the previous value so it can be restored (contract §4). Returns the raw
-/// [`sqlx::Error`] — not [`EnqueueError`] — so [`PostgresOutboxStore::insert_staged`] is the one
-/// place that maps it, for either caller (review round 2, m3).
+/// [`sqlx::Error`] — not [`EnqueueError`] — so `insert_staged` is the one place that maps it, for
+/// either caller (review round 2, m3).
 async fn set_search_path(
     tx: &mut Transaction<'_, Postgres>,
     schema: &str,

@@ -10,8 +10,22 @@ it, especially for the areas SRS §45 protects.
   structure · message contract identity/versioning · metadata/header ownership · transport mapping ·
   outbox transaction boundaries · delivery guarantees · retry/dead-state semantics · database
   provider boundaries · static vs dynamic dispatch policy · migration behaviour.
-- An ADR is **never edited to change its decision**. Write a new one and mark the old
-  `Superseded by NNNN`.
+- An ADR is **never rewritten to change its decision in place.** There are two mechanisms, and
+  which one applies depends on whether the decision has **shipped** — it ships with the first
+  crates.io release of the crate that carries it (for a platform decision, the first `main` commit
+  that runs it in CI):
+  - **Before it ships**, the decision is still being built and may be **amended**: append a dated
+    `## Amendment X — YYYY-MM-DD — <what changed>` section at the end of the record. The original
+    text is never edited away — every section the amendment overrides keeps its words and gains a
+    banner pointing at the amendment — and the index marks the record **Amended** with the dates
+    and a one-line summary of each amendment. An amendment is part of the same unreleased decision,
+    so no user of a released crate ever finds a rule that changed under them.
+  - **After it ships**, a reversal or any material change is a **new ADR**. The old record's status
+    becomes `Superseded by NNNN` (or `Superseded in part by NNNN`, naming the sections), the new
+    record states what it replaces and why, and the index is updated on both rows.
+  - A **clarification** that changes no behaviour — a wrong dependency listing, a rationale that was
+    never true, a stale cross-reference — may still be appended after shipping, dated and labelled a
+    correction, precisely because there is nothing a reader could have relied on.
 - Format: `# ADR NNNN — Title` · **Status** (with date) · **Context** · **Decision** ·
   **Consequences** · **Alternatives considered**.
 - The **frozen public contracts** live at `../architecture/phase1-contract.md` (core, outbox,
@@ -149,6 +163,19 @@ depends on the bot, and the merge gate is still CI plus the Definition of Done p
 `reviewer` verdict. `clippy` is disabled inside CodeRabbit because CI already runs it pinned across
 the feature powerset — a rule change in `team/` or an ADR updates `.coderabbit.yaml` in the same
 pull request.
+
+**Amended records, and the ship test applied to them.** Six records carry amendments: **0026**
+(A–C), **0028** (A, A corrected, B), **0030** (A, B, plus a correction), **0031** (A, B), **0032**
+(A) and **0033** (A–D). Every one of those amendments predates the first release of the crate whose
+behaviour it changes, so all of them are legal under the rule above and none needs reclassifying as
+a supersession. 0026 and 0028–0032 were written — decision *and* amendments — in commit `f7b029b`
+(2026-09-05 10:06), while `reliar-transport-nats` 0.1.0 and `reliar-core` / `reliar-outbox` /
+`reliar-store-postgres` 0.2.0 were tagged at `f08f7cc` two hours later; the amendments therefore
+describe the code as first published, not a change to it. 0032's Amendment A concerns a
+`[dev-dependencies]` entry, which is not in the published graph at all. 0033's A–D describe
+`reliar-outbox` 0.3.0 and `reliar-store-postgres` 0.3.0, neither of which is released. From the next
+release onwards the freeze in ADR 0034 and the rule above line up: a version that is frozen on
+crates.io has a frozen ADR behind it.
 
 Everything the review queued is recorded; nothing was dropped. Decisions the SRS resolved without
 needing an ADR (promoting `tenant_id`/`expires_at`, constraint/index naming, the `deploy/` layout,

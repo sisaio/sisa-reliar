@@ -99,7 +99,7 @@ use reliar_store_postgres::PostgresOutboxStore;
 use reliar_transport_nats::{NatsPublisher, NatsSettings};
 
 let settings = OutboxSettings::from_env("RELIAR_OUTBOX_")?;
-let policy = OutboxPolicy::from_settings(&settings)?;   // infallible — the pair is already valid
+let policy = OutboxPolicy::from_settings(&settings)?;   // validates the settings and builds the policy
 let outbox = OutboxPublisher::new(store, publisher, policy);
 
 // The caller serializes once, exactly as it would for a bare `NatsPublisher` — `OutboxPublisher`
@@ -184,12 +184,33 @@ committing) the transaction.
 
 `publish_batch` (the inherited default) keeps this same honesty: results stay positional, one per
 envelope, in order, but a positional `Ok` on a routed entry means only *the statement was
-accepted*, never *the message is durable* — durability is still the caller's `commit`, and one
-`Err` partway through the batch aborts the whole transaction, invalidating every earlier `Ok`
-along with it.
+accepted*, never *the message is durable* — durability is still the caller's `commit`. Only a
+**staging** failure (`RouteError::Stage`) partway through the batch typically aborts the whole
+transaction, invalidating every earlier `Ok` along with it. A **transport** failure
+(`RouteError::Publish`) does not touch the transaction at all, so the entries staged before it
+remain valid if the caller commits.
 
 None of this is a defect to fix — it is the honest cost of skipping the outbox, and the reason
 "everything except these" starts from the durable default rather than the other way around.
+
+## Delivery guarantees on the routed path
+
+The routed path is durable, but durable means **at-least-once**, never exactly-once. A staged row
+becomes a candidate for the `OutboxDispatcher` once the caller commits; the dispatcher claims it,
+publishes it to the transport, and only then marks it complete. If the process crashes — or the
+row's lease simply expires — between a successful `publish` and a persisted `complete`, the row is
+still claimable and gets republished on the next pass: the transport call already succeeded once,
+so the consumer sees the same message twice. A slower batch, a longer publish timeout, or a
+graceful-shutdown drain that runs out of time all widen this window; none of them close it, because
+closing it would need a distributed transaction across the database and the transport, which
+Reliar does not attempt (SRS §22, §22.1).
+
+Consequences for whoever consumes the routed messages: **consumers must be idempotent** — able to
+see the same `message.id` twice and produce the same effect once. `Nats-Msg-Id` (set to the
+envelope's `message_id`) lets JetStream collapse a duplicate for you, but only within its
+configured `duplicate_window`; outside that window, or on a broker that never gets the header, the
+consumer's own idempotency is what actually holds. See `docs/guides/nats.md` for how the header is
+set and how to size the window.
 
 ## `enabled = false` never stops the dispatcher
 
