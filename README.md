@@ -1,10 +1,18 @@
 # sisa-reliar
 
+[![test](https://github.com/sisaio/sisa-reliar/actions/workflows/test.yaml/badge.svg)](https://github.com/sisaio/sisa-reliar/actions/workflows/test.yaml)
+[![security](https://github.com/sisaio/sisa-reliar/actions/workflows/security.yaml/badge.svg)](https://github.com/sisaio/sisa-reliar/actions/workflows/security.yaml)
+[![Dependabot Updates](https://github.com/sisaio/sisa-reliar/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/sisaio/sisa-reliar/actions/workflows/dependabot/dependabot-updates)
+[![release](https://github.com/sisaio/sisa-reliar/actions/workflows/release.yaml/badge.svg)](https://github.com/sisaio/sisa-reliar/actions/workflows/release.yaml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 High-performance Rust toolkit for transactional outbox, inbox, idempotency, durable
 messaging, and SQL-first background jobs.
 
-**Status: pre-0.1, Phase 2 in progress** — the workspace, toolchain, and CI are in place; the
-crates are being built. Nothing is published to crates.io yet, and the public API is unstable.
+**Status: pre-1.0, Phase 2 (NATS transport) complete** — `reliar-core`, `reliar-outbox` and
+`reliar-store-postgres` are on crates.io (0.1.0, with 0.2.0 releasing alongside the first
+`reliar-transport-nats` 0.1.0). The public API is unstable until 1.0; breaking changes are recorded
+in `CHANGELOG.md`.
 
 ## Crates
 

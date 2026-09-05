@@ -1,0 +1,175 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit review configuration for Sisa Reliar.
+# Findings are ADVISORY input to the human reviewer and the team's `reviewer` agent — they never
+# gate a merge. The binding rules live in `team/engineering-conventions.md`,
+# `team/definition-of-done.md` and the ADRs under `docs/decisions/`.
+language: en-US
+tone_instructions: >-
+  Review as a maintainer of a public Rust library where the documented guarantees are the product.
+  Be direct and concrete, cite the rule you are applying, and skip stylistic nitpicks.
+
+reviews:
+  # `chill`, not `assertive`: CI already enforces fmt/clippy/-D warnings/feature-powerset and a
+  # dedicated reviewer agent does the deep semantic pass. CodeRabbit's value here is house-rule and
+  # semantics findings, so keep the nit volume low and the signal high.
+  profile: chill
+  # Advisory only — CodeRabbit must not request changes or auto-approve on the team's behalf.
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  # ADR 0035 §1 states the scope this encodes: a draft is work in progress, so the review is
+  # triggered by marking the pull request ready (and then repeated per push by
+  # `auto_incremental_review`); `main` is the only base branch a change merges into here.
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+    auto_incremental_review: true
+  path_filters:
+    - "!**/.sqlx/**"       # generated sqlx offline cache
+    - "!Cargo.lock"        # generated; dependency policy is deny.toml + Dependabot
+    - "!target/**"
+  path_instructions:
+    - path: "crates/reliar-core/**"
+      instructions: >-
+        `reliar-core` must stay pure (engineering-conventions §2, ADR 0032). Flag any sqlx,
+        PostgreSQL, NATS, Kafka, AMQP or Redis type, dependency or re-export, and any
+        transport-routing concept (subjects, topics, queues).
+        Core owns shared vocabulary only — `Envelope`, `Metadata`, `Headers`, `Serializer`,
+        `EnvelopeMapper`, `Publisher`, `Classify`/`FailureKind`, `SettingsError`. Items that encode
+        *how* one capability works (`OutboxStore`, `OutboxRecord`, `RetryPolicy`, dispatcher
+        settings, `SubjectResolver`) belong in the owning crate, not here. Adding to core is a
+        design decision: ask for an ADR rather than approving it inline.
+    - path: "crates/**/src/**"
+      instructions: >-
+        House rules from `team/engineering-conventions.md` §3–§9, §12:
+        native async fns in traits returning `impl Future<Output = …> + Send` — never `async-trait`;
+        small capability traits with an associated `type Error`;
+        generics and static dispatch on hot paths — no `Box<dyn …>`;
+        hand-rolled `#[non_exhaustive]` error enums with `Display`, `std::error::Error::source()`
+        and targeted `From` impls — never `thiserror` or `anyhow` in a library crate;
+        `bytes::Bytes` for payloads, `uuid` v7 ids, the `time` crate — never `chrono`;
+        `#![forbid(unsafe_code)]` and rustdoc on every public item, stating the guarantee
+        it upholds;
+        no inline `#[cfg(test)]` module — tests live in `tests/`;
+        public structs that may grow are `#[non_exhaustive]` or built through a `*Settings`/builder
+        with `Default`, never a positional field list;
+        spans named `reliar.<crate>.<op>`, payloads and custom headers never logged, no
+        high-cardinality id as a metric label;
+        cancellation via `CancellationToken` with bounded concurrency and a graceful drain.
+        Comments justify *why*; delete line-restating comments. Semantics must stay honest:
+        at-least-once with a documented duplicate window, never exactly-once, never a cross-worker
+        ordering promise. Flag any change to a published public signature that lacks a version bump
+        and a `CHANGELOG.md` entry (ADR 0034).
+    - path: "crates/reliar-store-postgres/**"
+      instructions: >-
+        Postgres provider rules (engineering-conventions §6, ADRs 0006, 0015–0018, skill
+        `sqlx-postgres`): sqlx compile-time macros only (`query!`, `query_as!`, `query_scalar!`) —
+        never the runtime string API, never `FromRow`; read paths take `impl PgExecutor<'_>`, the
+        transactional write path takes the caller's `&mut Transaction<'_, Postgres>`;
+        DB-authoritative time — `now()` for leases, `available_at` and expiry, `timestamptz`
+        columns, never a worker's local clock;
+        no network or broker I/O inside the claim transaction; claim is
+        `SELECT … FOR UPDATE SKIP LOCKED` + lease update in a short transaction;
+        completion/failure updates guarded by `locked_by = $worker` so a stale worker cannot clobber
+        a reclaimed row; batch updates via `= ANY($1)`/`UNNEST`.
+        Migrations are forward-only, run only through the explicit `migrate()` API, never edited
+        once applied, and lock-safe on large tables; `.sqlx/` must be regenerated and committed with
+        any query change. Constraints and indexes are named `pk_`/`fk_`/`ck_`/`ix_`; every new index
+        must be justified by the actual claim or purge query. PostgreSQL 18+ only.
+    - path: "crates/reliar-transport-nats/**"
+      instructions: >-
+        NATS transport rules (ADRs 0026–0031, skill `transport-nats`): the mapper projects canonical
+        `Metadata` to `reliar-*` headers plus W3C `traceparent`/`tracestate` over a raw body — no
+        JSON re-wrapping, no metadata value duplicated into a custom header, `Nats-Msg-Id` carries
+        the message id; subject resolution stays a transport-side strategy and never leaks into
+        `reliar-core`; the JetStream publish ack must be awaited before the publish is reported
+        successful; `Classify` must be decided per error variant, not by string matching; broker
+        errors must never be logged or surfaced in a way that leaks credentials, connection URLs or
+        payload bytes.
+    - path: "crates/**/tests/**"
+      instructions: >-
+        Tests exercise the **public API** from `tests/`, with shared helpers in `tests/common/`
+        (engineering-conventions §10, skill `rust-lib-testing`). Abstraction crates use in-memory
+        fakes and `#[tokio::test(start_paused = true)]` with `tokio::time::advance` — no wall-clock
+        sleeps, no shared mutable state, no ordering dependence between tests. Provider tests run
+        against a real ephemeral container and must not leak it (one container per test binary,
+        removed with its volumes).
+        Judge each test by "would a plausible mutation of the code under test make this fail?" —
+        flag assertions that only check a call happened, `unwrap()` chains that hide the real
+        assertion, and acceptance criteria (leases, retry/backoff, dead state, cancellation,
+        concurrency bounds, crash-after-publish duplicate window, purge) that have no failing test.
+    - path: "tests/**"
+      instructions: >-
+        System tests wire real Postgres and real NATS together end to end. Same rules as crate
+        tests: public API only, deterministic, container hygiene, and an assertion that would catch
+        a regression in the guarantee under test rather than merely a happy-path smoke check.
+    - path: ".github/**"
+      instructions: >-
+        Workflows follow `team/engineering-conventions.md` §10a and skill `ci-release`: actions
+        referenced by their latest major version tag (`actions/checkout@v7`), not a commit SHA, and
+        new majors must run on Node 24 (`dtolnay/rust-toolchain@stable`/`@master` and
+        `ossf/scorecard-action`'s exact patch tag are the documented exceptions);
+        `permissions: read-all` at the top, widened per job; every YAML file ends in `.yaml` — the
+        single exception is the GitHub-mandated `.github/dependabot.yml`;
+        no secret in a workflow file, tokens only through repository secrets, and every
+        `actions/checkout` that precedes a `cargo` invocation sets `persist-credentials: false`
+        (CWE-522 — build scripts and proc macros run pull-request-controlled code) unless the job
+        itself pushes to the repository, which only `release.yaml`'s release-plz job does;
+        a guard step must fail loudly — flag any `|| true`, swallowed exit code or grep whose
+        no-match case silently passes.
+    - path: "docs/decisions/**"
+      instructions: >-
+        An ADR states context → decision → consequences → alternatives, carries a status and date,
+        and names the SRS sections it touches. Check the decision is actually decided (no hedging),
+        that consequences include the costs, and that the index in `docs/decisions/README.md` is
+        updated. Anything touching an SRS §45 protected area needs the ADR *before* the code.
+    - path: "deploy/**"
+      instructions: >-
+        Local dev infra only (`deploy/docker/`, `deploy/compose/`). No credential may be committed —
+        secrets come from the environment or a git-ignored file with a committed `*.example`.
+        Image tags are pinned, and the compose service must match the image and tag the
+        testcontainers-based tests start, so a local reproduction matches CI.
+  tools:
+    # Enabled: they match what this repo actually contains.
+    actionlint: {enabled: true}        # GitHub Actions workflow correctness
+    zizmor: {enabled: true}            # GitHub Actions security (injection, over-broad tokens)
+    yamllint: {enabled: true}
+    markdownlint: {enabled: true}
+    shellcheck: {enabled: true}        # inline bash in workflow steps
+    gitleaks: {enabled: true}          # committed-secret scan
+    hadolint: {enabled: true}          # deploy/docker
+    squawk: {enabled: true}            # migration lock-safety in the provider crate
+    github-checks: {enabled: true}     # fold CI results into the review
+    # Disabled: CI is the authority (clippy runs pinned, with the full feature powerset and the
+    # sqlx offline cache — a second, unreproducible run would only produce stale duplicates),
+    # the finding duplicates an existing gate (cargo-audit / cargo-deny / gitleaks), or the
+    # ecosystem does not exist in this repo.
+    clippy: {enabled: false}
+    osvScanner: {enabled: false}
+    trufflehog: {enabled: false}
+    trivy: {enabled: false}
+    checkov: {enabled: false}
+    semgrep: {enabled: false}
+    opengrep: {enabled: false}
+    sqlfluff: {enabled: false}
+    languagetool: {enabled: false}     # technical vocabulary produces false positives
+    vale: {enabled: false}
+    biome: {enabled: false}
+    eslint: {enabled: false}
+    oxc: {enabled: false}
+    ruff: {enabled: false}
+    pylint: {enabled: false}
+    flake8: {enabled: false}
+    checkmake: {enabled: false}
+    dotenvLint: {enabled: false}
+    prismaLint: {enabled: false}
+    htmlhint: {enabled: false}
+    stylelint: {enabled: false}
+
+chat:
+  auto_reply: true
+  art: false

@@ -55,6 +55,8 @@ it, especially for the areas SRS §45 protects.
 | [0031](0031-nats-dependency-and-test-substrate.md) | The `async-nats` pin, its minimal features, and the NATS test substrate | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `tokio` is a runtime dependency; readiness is the JetStream retry loop) and 2026-09-05 (**B** the pin gate covers `tests/system`; §6 becomes a CI gate) | §7.1, §8.2, §40–§43 |
 | [0032](0032-publisher-and-shared-primitives-in-core.md) | `Publisher`, `Classify`, `FailureKind` and `SettingsError` belong to `reliar-core` | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** a `tokio` dev-dependency in `reliar-core` is inside this ADR) | §18, §19.4, §23, §36, §43.B |
 | [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxRouter` + the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` capability | Accepted 2026-09-05 | §7, §12, §18, §19.6, §20, §22, §23, §33, §36 |
+| [0034](0034-versioning-and-release-flow.md) | Independent per-crate versions, bumped in the change that breaks them; `release-plz` publishes rather than decides | Accepted 2026-09-05 | §7, §40, §44, §45 |
+| [0035](0035-coderabbit-is-advisory-pr-review.md) | CodeRabbit reviews every ready pull request into `main` against a committed `.coderabbit.yaml`, as advisory input only | Accepted 2026-09-05 | §38, §41 |
 
 ## Numbering note
 
@@ -103,6 +105,34 @@ router serializes once so the wire bytes do not depend on the route; and it deli
 implement `Publisher`, which would let a host feed the outbox back into itself. Its frozen surface is
 `../architecture/routing-publisher-contract.md`.
 
+**0034** (2026-09-05) settles versioning and the release flow after the first Phase-2 release
+attempt failed: `reliar-core`'s public surface had changed (0032) while its version stayed at the
+0.1.0 that was already on crates.io, so `cargo publish` built the new `reliar-transport-nats`
+against the registry's `reliar-core` 0.1.0 and could not resolve `Publisher`, `Classify`,
+`FailureKind` or `SettingsError`. Crates version independently; in the 0.x line a public-surface
+change is a minor bump and everything else a patch; a dependent is released when the new version of
+a crate it depends on falls outside its declared requirement (an admitted patch bump obliges
+nothing); and the bump lands in the pull request that requires it rather than in a `release-plz`
+release PR — so `main` is publishable at every commit and `release.yaml` runs `release-plz`'s
+`release` command only (`release-plz.toml`). `ci.yaml`'s `versioning` job enforces it: a version that
+is on crates.io is frozen against its release tag — both the crate directory and the fields it
+inherits from the root manifest, compared as `cargo metadata`'s resolved record for that one package
+so a root edit fails only the crates that actually inherit it — and `cargo semver-checks` then runs
+against the published baseline (RELIAR-22).
+
+**0035** (2026-09-05) puts an automated reviewer on every pull request that is ready for review and
+targets `main` — a draft is reviewed once it is marked ready, and `main` is the only base branch a
+change merges into here. `.coderabbit.yaml` at the
+repo root is the whole configuration — nothing lives in the vendor's UI — and its `path_instructions`
+restate the house rules per area (`reliar-core` purity, the crate-wide Rust rules, the Postgres
+provider's sqlx/lease/migration rules, the NATS mapping, the test rules, `.github/`, `deploy/`), as a
+projection of `team/engineering-conventions.md` and `team/definition-of-done.md`, which remain the
+source of truth. The findings are advisory: `request_changes_workflow` is off, no branch protection
+depends on the bot, and the merge gate is still CI plus the Definition of Done plus the independent
+`reviewer` verdict. `clippy` is disabled inside CodeRabbit because CI already runs it pinned across
+the feature powerset — a rule change in `team/` or an ADR updates `.coderabbit.yaml` in the same
+pull request.
+
 Everything the review queued is recorded; nothing was dropped. Decisions the SRS resolved without
 needing an ADR (promoting `tenant_id`/`expires_at`, constraint/index naming, the `deploy/` layout,
 the clock split, facade timing) are specified in the SRS text and referenced from the ADRs above.
@@ -122,3 +152,5 @@ the clock split, facade timing) are specified in the SRS text and referenced fro
 | settings, metrics, spans, or logs | 0019, 0020 |
 | tests, CI, profiles, or the workspace | 0021, 0022, 0024, 0025 |
 | the MSRV, or a security advisory that conflicts with it | 0024, 0025 |
+| a version number, a crate's release, or `release-plz` | 0034, then 0021, 0022 |
+| the automated PR review, or `.coderabbit.yaml` | 0035, then `../../team/engineering-conventions.md` |

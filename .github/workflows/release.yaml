@@ -15,18 +15,29 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
-  # release-plz bumps versions from conventional commits, updates CHANGELOG.md, tags, and
-  # publishes in dependency order (reliar-core → reliar-outbox → reliar-store-postgres → …).
+  # release-plz tags, creates the GitHub release, and publishes in dependency order
+  # (reliar-core → reliar-outbox → reliar-store-postgres → reliar-transport-nats), waiting for the
+  # index between crates. It does **not** decide version numbers: ADR 0034 gives those to the pull
+  # request that changes the crate, and `ci.yaml`'s `versioning` job proves the bump happened
+  # before the merge. `release-plz.toml` records the configuration; `main` is publishable at every
+  # commit, so this job is a publish, never a decision.
   release-plz:
     name: release-plz
     runs-on: ubuntu-latest
     permissions:
+      # Tags and GitHub releases only. `pull-requests: write` went with the `release-pr` command
+      # this job no longer runs (ADR 0034 §5).
       contents: write
-      pull-requests: write
     outputs:
       releases: ${{ steps.release.outputs.releases }}
       releases_created: ${{ steps.release.outputs.releases_created }}
     steps:
+      # The one checkout in this repository that keeps the token in `.git/config`: release-plz
+      # pushes the release tags over the origin remote, so `persist-credentials: false` would
+      # break the release. It is safe here and nowhere else — this job runs only on `push` to
+      # `main`, i.e. on code that has already been reviewed and merged, never on a fork's pull
+      # request. Every checkout that can see pull-request-controlled code before a `cargo`
+      # invocation sets `persist-credentials: false` instead (CWE-522).
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -39,13 +50,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: release-plz release-pr
-        uses: release-plz/action@v0.5
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # There is deliberately no `release-pr` step (ADR 0034 §5): two owners for a version number
+      # is how a bump gets forgotten, and that is precisely what broke the first Phase-2 release —
+      # `release` and `release-pr` were two steps of one job with `release` first, so the failed
+      # publish also cancelled the pull request that would have proposed the missing bump.
 
   # The migrations embedded in the crate stay the source of truth; this asset only serves teams
   # that run migrations through their own pipeline. Guarded until the provider crate exists.
@@ -59,7 +67,12 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # No git write here — `gh release upload` and the attestation take their tokens from `env`
+      # and from the action's own input, so the persisted credential would only be an extra
+      # secret sitting in the workspace while `cargo metadata` runs.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: package migrations
         id: package

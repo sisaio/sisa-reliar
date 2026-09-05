@@ -58,6 +58,8 @@ jobs:
       NATS_URL: nats://127.0.0.1:4222
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # NATS is a **step**, not a service container, and that is not an oversight: a service
       # container accepts only image/env/ports/volumes/options — it cannot override the image's
       # CMD — and `nats`'s default command starts nats-server from /etc/nats/nats-server.conf
@@ -162,6 +164,8 @@ jobs:
       DATABASE_URL: postgres://reliar:reliar@localhost:5432/reliar?options=-c%20search_path%3Dreliar,public
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: install the pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
