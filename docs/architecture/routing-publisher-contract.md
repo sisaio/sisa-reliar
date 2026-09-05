@@ -430,7 +430,12 @@ pub trait OutboxStaging<Tx>: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Provider-defined. A failure has typically aborted `tx`; the caller must roll back.
+    /// Provider-defined. An `Err` **MAY** leave `tx` unusable, and whether it does is the
+    /// provider's contract — every implementor documents which. The portable rule a caller can
+    /// rely on is therefore: treat any staging error as *abort this transaction* — issue no
+    /// further statement on `tx`, roll it back, and consider every earlier write in it lost.
+    /// With `reliar-store-postgres` the transaction **is** aborted: PostgreSQL rejects every
+    /// subsequent statement on it, so no earlier write in that transaction can still be committed.
     fn stage(
         &self,
         tx: &mut Tx,
@@ -600,8 +605,10 @@ where
     ///
     /// # Errors
     ///
-    /// [`RouteError::Stage`] — the transaction has typically been aborted, roll back;
-    /// [`RouteError::Publish`] — the transaction is untouched and still committable.
+    /// [`RouteError::Stage`] — abort this transaction: roll back and treat every earlier write in
+    /// it as lost ([`OutboxStaging::stage`]'s rule; with `reliar-store-postgres` the transaction
+    /// is in fact aborted). [`RouteError::Publish`] — the transaction is untouched and still
+    /// committable.
     fn publish(&self, envelope: &SerializedEnvelope)
         -> impl Future<Output = Result<(), Self::Error>> + Send;
 
@@ -615,10 +622,13 @@ envelope, in order. A positional `Ok` on a routed entry means *the statement was
 that the message is durable: durability is the caller's `commit`. Which earlier `Ok`s survive a
 mid-batch failure depends on **which** error it was, and the two are not symmetric:
 
-- **`Err(RouteError::Stage(_))`** — the staging statement failed, so PostgreSQL has typically
-  aborted the caller's transaction. Every earlier routed `Ok` in the batch is invalidated with it:
-  those rows never become durable, whatever the caller does next. This is the only failure that
-  reaches back and unmakes earlier entries.
+- **`Err(RouteError::Stage(_))`** — the staging statement failed, and by `OutboxStaging::stage`'s
+  rule (§3) the caller must now abort the transaction and treat every earlier write in it as lost.
+  Every earlier routed `Ok` in the batch is invalidated with it: those rows never become durable,
+  whatever the caller does next. This is the only failure that reaches back and unmakes earlier
+  entries. How hard the database enforces that is the provider's contract — with
+  `reliar-store-postgres` the transaction is aborted outright, so PostgreSQL rejects every
+  subsequent statement and the earlier rows cannot be committed even if the caller ignores the rule.
 - **`Err(RouteError::Publish(_))`** — the transport rejected a *direct* entry. The transaction is
   untouched and still committable, and every earlier staged row remains staged: commit and they are
   durable, roll back and none of them is. Only the entry that failed is lost, and the caller may
@@ -878,7 +888,7 @@ No inline `#[cfg(test)]`. Envelopes are serialized by the test itself (§4.2's t
 | R15 | D6 | `tests/system` (e2e) | Routed type: scoped `publish` + commit → row in `outbox` → dispatcher → message on the stream. Direct type: on the stream immediately, `SELECT count(*) FROM outbox` for that id is `0`. | carries over |
 | R16 | D6 | `tests/system` | Direct path is not transactional: scoped `publish` of a direct type, then **roll back** — the message is still on the stream. The honest-guarantee test; name it so nobody "fixes" it. | carries over |
 | R17 | D7 | doc | `cargo doc -D warnings`; the rustdoc doctest compiles a fake-backed example showing the caller's serialization block and both routes. | carries over |
-| **R22** | D6 | `routing_batch.rs` | **New.** `publish_batch` through the scoped view: results are **positional** (one per envelope, in order, mixed routes preserved), staging happens **sequentially**, and a mid-batch `Err(RouteError::Stage(_))` still returns `Ok` for earlier entries — with the test asserting that those entries are **not durable** after a rollback. Its twin asserts the asymmetry: a mid-batch `Err(RouteError::Publish(_))` leaves the transaction committable and every earlier staged row **durable after the commit**. Proves §4.1's "positional ≠ durable" note, both halves, rather than assuming it. | new |
+| **R22** | D6 | `routing_batch.rs` | **New.** `publish_batch` through the scoped view: results are **positional** (one per envelope, in order, mixed routes preserved), staging happens **sequentially**, and a mid-batch `Err(RouteError::Stage(_))` still returns `Ok` for earlier entries — with the test asserting that those entries are **not durable** after the rollback §3's rule requires. Its twin asserts the asymmetry: a mid-batch `Err(RouteError::Publish(_))` leaves the transaction committable and every earlier staged row **durable after the commit**. Proves §4.1's "positional ≠ durable" note, both halves, rather than assuming it. | new |
 | **R23** | D6 | `routing_is_a_publisher.rs` (+ a postgres-side twin) | **New.** The scoped view **is** a `Publisher`: a generic `async fn f<P: Publisher>(&P, &SerializedEnvelope)` accepts it and both `publish` and `publish_batch` work through it; the future is asserted `Send` from a **non-`'static`** transaction scope. The postgres twin runs the same assertion over a real `Transaction<'_, Postgres>` (this is what R14a becomes). | new |
 | **R24** | — | `routing_is_a_publisher.rs` (compile-fail note) or doc | **New.** The guard: `OutboxPublisher` does **not** implement `Publisher`, and the scoped view is neither `'static` nor `Clone`, so neither can be passed to `OutboxDispatcher::builder`. A `trybuild`-style compile-fail case if the crate already has one; otherwise a documented static assertion (`fn _assert_not_static` shape) plus the rustdoc statement. Do not add a new dev-dependency for this. | new |
 

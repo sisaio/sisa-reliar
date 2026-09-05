@@ -184,11 +184,14 @@ committing) the transaction.
 
 `publish_batch` (the inherited default) keeps this same honesty: results stay positional, one per
 envelope, in order, but a positional `Ok` on a routed entry means only *the statement was
-accepted*, never *the message is durable* — durability is still the caller's `commit`. Only a
-**staging** failure (`RouteError::Stage`) partway through the batch typically aborts the whole
-transaction, invalidating every earlier `Ok` along with it. A **transport** failure
-(`RouteError::Publish`) does not touch the transaction at all, so the entries staged before it
-remain valid if the caller commits.
+accepted*, never *the message is durable* — durability is still the caller's `commit`. Whether a
+**staging** failure (`RouteError::Stage`) partway through the batch leaves the transaction usable
+is the *provider's* contract, not the outbox crate's: `OutboxStaging::stage` promises only that a
+failure has "typically" aborted it. With `reliar-store-postgres`, a failed statement always leaves
+the transaction aborted, so a subsequent `commit` rolls back and every earlier `Ok` in the same
+transaction is lost — a different provider's `OutboxStaging` impl may behave differently, so check
+its own docs. A **transport** failure (`RouteError::Publish`) never touches the transaction,
+regardless of provider, so the entries staged before it remain valid if the caller commits.
 
 None of this is a defect to fix — it is the honest cost of skipping the outbox, and the reason
 "everything except these" starts from the durable default rather than the other way around.

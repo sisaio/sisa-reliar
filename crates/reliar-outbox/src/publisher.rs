@@ -328,16 +328,22 @@ where
     ///
     /// # Errors
     ///
-    /// [`RouteError::Stage`] — the transaction has typically been aborted, roll back;
-    /// [`RouteError::Publish`] — the transaction is untouched and still committable.
+    /// [`RouteError::Stage`] — whether `tx` is still usable after this is the **provider's**
+    /// contract, not this crate's: [`OutboxStaging::stage`] promises only that a failure has
+    /// "typically" aborted it. With `reliar-store-postgres`, a failed statement always leaves the
+    /// transaction in an aborted state, so `commit` rolls back and every earlier `Ok` in the same
+    /// transaction is lost — check a different provider's own docs for its behavior.
+    /// [`RouteError::Publish`] — a transport failure never touches the transaction; it stays
+    /// committable regardless of provider.
     ///
     /// [`Self::publish_batch`] is the inherited default: results stay positional, one per
     /// envelope, in order. A positional `Ok` on a routed entry means *the statement was
-    /// accepted*, **not** that the message is durable — durability is the caller's `commit`, and
-    /// one `Err(RouteError::Stage(_))` aborts the whole transaction, invalidating every `Ok`
-    /// before it. An `Err(RouteError::Publish(_))` is different: a direct publish never issues a
-    /// statement on the transaction, so it neither aborts it nor invalidates any earlier `Ok` —
-    /// the staged entries before and after it remain valid if the caller commits.
+    /// accepted*, **not** that the message is durable — durability is the caller's `commit`. With
+    /// `reliar-store-postgres`, one `Err(RouteError::Stage(_))` aborts the whole transaction,
+    /// invalidating every `Ok` before it. An `Err(RouteError::Publish(_))` is provider-independent:
+    /// a direct publish never issues a statement on the transaction, so it neither aborts it nor
+    /// invalidates any earlier `Ok` — the staged entries before and after it remain valid if the
+    /// caller commits.
     fn publish(
         &self,
         envelope: &SerializedEnvelope,

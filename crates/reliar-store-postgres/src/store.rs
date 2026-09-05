@@ -485,6 +485,10 @@ where
     /// [`EnqueueError::Database`] for any other `sqlx` failure. [`EnqueueError::Serialize`] is
     /// never returned — `Self::Error`'s serializer parameter is
     /// [`core::convert::Infallible`], so it cannot be constructed.
+    ///
+    /// Either variant leaves `tx` aborted: a failed statement puts the PostgreSQL transaction in
+    /// the aborted state, so PostgreSQL rejects every subsequent statement on it, and every
+    /// earlier `stage` — and every other write — in that transaction is rolled back at commit.
     async fn stage(
         &self,
         tx: &mut Transaction<'c, Postgres>,

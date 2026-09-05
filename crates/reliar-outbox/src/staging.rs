@@ -29,7 +29,12 @@ pub trait OutboxStaging<Tx>: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Provider-defined. A failure has typically aborted `tx`; the caller must roll back.
+    /// Provider-defined. An `Err` **MAY** leave `tx` unusable, and whether it does is the
+    /// provider's contract — every implementor documents which. The portable rule a caller can
+    /// rely on is therefore: treat any staging error as *abort this transaction* — issue no
+    /// further statement on `tx`, roll it back, and consider every earlier write in it lost.
+    /// With `reliar-store-postgres` the transaction **is** aborted: PostgreSQL rejects every
+    /// subsequent statement on it, so no earlier write in that transaction can still be committed.
     fn stage(
         &self,
         tx: &mut Tx,

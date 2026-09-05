@@ -15,7 +15,7 @@ use reliar_outbox::{
 
 const SECRET_HEADER_VALUE: &str = "RELIAR_OUTBOX_HEADER_VALUE_MUST_NEVER_APPEAR_IN_A_LOG";
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn one_route_span_carries_route_and_never_a_header_value() {
     let (recorder, _guard) = common::RecordingSubscriber::install();
 
@@ -62,7 +62,7 @@ async fn one_route_span_carries_route_and_never_a_header_value() {
 /// The direct path records `route="direct"` on the same span — proves the field is actually
 /// written by `record("route", …)`, not merely satisfied by the span's own name (which never
 /// changes) or by a substring match against the wrong route (mutation M-1, review round 1).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn direct_route_records_route_equals_direct() {
     let (recorder, _guard) = common::RecordingSubscriber::install();
 
@@ -95,7 +95,7 @@ async fn direct_route_records_route_equals_direct() {
 /// from a successful outcome, so a store rejection must not leave `route` unset (PR review,
 /// Copilot). Mutation: recording `route` *after* `staging.stage(..)` instead of before it makes
 /// this assertion red, because `?` returns before the record call ever runs.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn failed_stage_still_records_route_on_the_span() {
     let (recorder, _guard) = common::RecordingSubscriber::install();
 
@@ -124,7 +124,7 @@ async fn failed_stage_still_records_route_on_the_span() {
 /// A failed transport publish still records `route` on the span, on both `publish` (routed
 /// through [`ScopedOutboxPublisher`], here configured direct) and [`OutboxPublisher::publish_direct`]
 /// — same mutation as above, on the direct branch.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn failed_transport_publish_still_records_route_on_the_span() {
     let (recorder, _guard) = common::RecordingSubscriber::install();
 
@@ -159,7 +159,7 @@ async fn failed_transport_publish_still_records_route_on_the_span() {
 
 /// `publish_batch` (the inherited default) emits one span per envelope — a per-message outcome
 /// needs a per-message span.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn publish_batch_emits_one_span_per_envelope() {
     let (recorder, _guard) = common::RecordingSubscriber::install();
 
