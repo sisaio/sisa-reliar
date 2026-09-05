@@ -10,8 +10,22 @@ it, especially for the areas SRS §45 protects.
   structure · message contract identity/versioning · metadata/header ownership · transport mapping ·
   outbox transaction boundaries · delivery guarantees · retry/dead-state semantics · database
   provider boundaries · static vs dynamic dispatch policy · migration behaviour.
-- An ADR is **never edited to change its decision**. Write a new one and mark the old
-  `Superseded by NNNN`.
+- An ADR is **never rewritten to change its decision in place.** There are two mechanisms, and
+  which one applies depends on whether the decision has **shipped** — it ships with the first
+  crates.io release of the crate that carries it (for a platform decision, the first `main` commit
+  that runs it in CI):
+  - **Before it ships**, the decision is still being built and may be **amended**: append a dated
+    `## Amendment X — YYYY-MM-DD — <what changed>` section at the end of the record. The original
+    text is never edited away — every section the amendment overrides keeps its words and gains a
+    banner pointing at the amendment — and the index marks the record **Amended** with the dates
+    and a one-line summary of each amendment. An amendment is part of the same unreleased decision,
+    so no user of a released crate ever finds a rule that changed under them.
+  - **After it ships**, a reversal or any material change is a **new ADR**. The old record's status
+    becomes `Superseded by NNNN` (or `Superseded in part by NNNN`, naming the sections), the new
+    record states what it replaces and why, and the index is updated on both rows.
+  - A **clarification** that changes no behaviour — a wrong dependency listing, a rationale that was
+    never true, a stale cross-reference — may still be appended after shipping, dated and labelled a
+    correction, precisely because there is nothing a reader could have relied on.
 - Format: `# ADR NNNN — Title` · **Status** (with date) · **Context** · **Decision** ·
   **Consequences** · **Alternatives considered**.
 - The **frozen public contracts** live at `../architecture/phase1-contract.md` (core, outbox,
@@ -54,7 +68,7 @@ it, especially for the areas SRS §45 protects.
 | [0030](0030-nats-publish-error-classification.md) | `NatsPublishError` classifies per variant and leaks nothing | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `max_payload = Some(0)` is a construction error · **B** the `Broker` `warn` logs the kind name, never the `async-nats` `Display`), corrected 2026-09-05 (the size guard saves no round-trip) | §17.1, §19.4, §23, §33 |
 | [0031](0031-nats-dependency-and-test-substrate.md) | The `async-nats` pin, its minimal features, and the NATS test substrate | **Amended** — accepted 2026-09-04, amended 2026-09-04 (**A** `tokio` is a runtime dependency; readiness is the JetStream retry loop) and 2026-09-05 (**B** the pin gate covers `tests/system`; §6 becomes a CI gate) | §7.1, §8.2, §40–§43 |
 | [0032](0032-publisher-and-shared-primitives-in-core.md) | `Publisher`, `Classify`, `FailureKind` and `SettingsError` belong to `reliar-core` | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** a `tokio` dev-dependency in `reliar-core` is inside this ADR) | §18, §19.4, §23, §36, §43.B |
-| [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxRouter` + the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` capability | Accepted 2026-09-05 | §7, §12, §18, §19.6, §20, §22, §23, §33, §36 |
+| [0033](0033-outbox-routing-publisher.md) | The outbox routing publisher: `OutboxPolicy` (the rule) + `OutboxPublisher`/`ScopedOutboxPublisher` (composition, and a `reliar_core::Publisher`) + the `OutboxStaging<Tx>` capability | **Amended** — accepted 2026-09-05, amended 2026-09-05 (**A** settings are top-level `OutboxSettings` fields, no `RoutingSettings` · **B** `allowed_types` + `disallowed_types`, disallow wins, an overlap is a `SettingsError` at construction · **C** the rule is its own type `OutboxPolicy` in module `policy`; the composition owns one and delegates · **D** the routing publisher **is** a `Publisher`: `OutboxRouter` → `OutboxPublisher` handing out a transaction-scoped `ScopedOutboxPublisher` that implements `reliar_core::Publisher`; the `OutboxEnqueue`/`OutboxEnqueueIn<Cx>` pair collapses into one `OutboxStaging<Tx>`; the caller serializes, so no `Serializer` here) | §7, §12, §18, §19.6, §20, §20.2, §22, §23, §31, §33, §36 |
 | [0034](0034-versioning-and-release-flow.md) | Independent per-crate versions, bumped in the change that breaks them; `release-plz` publishes rather than decides | Accepted 2026-09-05 | §7, §40, §44, §45 |
 | [0035](0035-coderabbit-is-advisory-pr-review.md) | CodeRabbit reviews every ready pull request into `main` against a committed `.coderabbit.yaml`, as advisory input only | Accepted 2026-09-05 | §38, §41 |
 
@@ -98,12 +112,29 @@ dependency graph; it lets `reliar-transport-nats` drop `reliar-outbox` entirely,
 
 **0033** (2026-09-05, story RELIAR-43) adds the routing publisher: one call that either stages a
 message in the outbox — inside the caller's transaction — or publishes it straight to the transport,
-decided by `RoutingSettings` (`enabled`, a routed-type list, empty = all). It lives in
+decided by three top-level `OutboxSettings` fields — `enabled`, `allowed_types` (empty = all) and
+`disallowed_types` (**Amendment A**, 2026-09-05: the human chose top-level fields and
+`RELIAR_OUTBOX_ENABLED` over a `RoutingSettings` sub-section; `enabled = false` stops *entry*, never
+draining. **Amendment B**, same day: the routed list is `allowed_types`, a `disallowed_types` list
+sits beside it, **disallow wins** — so "everything except `c`" is an empty allow list plus one name
+— and a type in both lists is a `SettingsError` on every construction path, never a silent
+tie-break. **Amendment C**, same day: that whole rule is its own type, `OutboxPolicy` in
+`reliar-outbox/src/policy.rs` — built and validated once by `OutboxPolicy::from_settings`, answering
+`decide(&MessageType) -> RouteKind`, testable and previewable without a store or a transport, while
+the composition merely owns one and delegates; `OutboxSettings::route_for`/`validate_routing` are
+removed and the constructor is infallible again. **Amendment D**, same day: the human's "the routing
+publisher *is* a `Publisher`" — `OutboxRouter` becomes **`OutboxPublisher`**, and because
+`Publisher::publish` carries no transaction it hands out a transaction-scoped
+**`ScopedOutboxPublisher`** that implements `reliar_core::Publisher` for the life of the borrow;
+that scoped type borrows a transaction, so it is neither `'static` nor `Clone` and
+`OutboxDispatcher`'s bound rejects it — the feedback cycle 0033 §4 feared is now a **compile error**
+rather than a rustdoc warning, and the un-scoped type still implements no `Publisher`. D also
+collapses the capability pair into one `OutboxStaging<Tx>` taking `&mut Tx` — which deletes the
+`Transaction<'c, _>` invariance trap — and moves serialization to the caller, so `reliar-outbox`
+holds no `Serializer` and both routes carry the same buffer). It lives in
 `reliar-outbox` because it is outbox mechanics under 0032's kind test; the caller's transaction
-reaches it as an opaque type parameter (`OutboxEnqueueIn<Cx>`), so no SQLx type enters the crate; the
-router serializes once so the wire bytes do not depend on the route; and it deliberately does **not**
-implement `Publisher`, which would let a host feed the outbox back into itself. Its frozen surface is
-`../architecture/routing-publisher-contract.md`.
+reaches it as an opaque type parameter (`OutboxStaging<Tx>`), so no SQLx type enters the crate. Its
+frozen surface is `../architecture/routing-publisher-contract.md`.
 
 **0034** (2026-09-05) settles versioning and the release flow after the first Phase-2 release
 attempt failed: `reliar-core`'s public surface had changed (0032) while its version stayed at the
@@ -112,7 +143,7 @@ against the registry's `reliar-core` 0.1.0 and could not resolve `Publisher`, `C
 `FailureKind` or `SettingsError`. Crates version independently; in the 0.x line a public-surface
 change is a minor bump and everything else a patch; a dependent is released when the new version of
 a crate it depends on falls outside its declared requirement (an admitted patch bump obliges
-nothing); and the bump lands in the pull request that requires it rather than in a `release-plz`
+nothing, and moves no `[workspace.dependencies]` pin); and the bump lands in the pull request that requires it rather than in a `release-plz`
 release PR — so `main` is publishable at every commit and `release.yaml` runs `release-plz`'s
 `release` command only (`release-plz.toml`). `ci.yaml`'s `versioning` job enforces it: a version that
 is on crates.io is frozen against its release tag — both the crate directory and the fields it
@@ -133,6 +164,19 @@ depends on the bot, and the merge gate is still CI plus the Definition of Done p
 the feature powerset — a rule change in `team/` or an ADR updates `.coderabbit.yaml` in the same
 pull request.
 
+**Amended records, and the ship test applied to them.** Six records carry amendments: **0026**
+(A–C), **0028** (A, A corrected, B), **0030** (A, B, plus a correction), **0031** (A, B), **0032**
+(A) and **0033** (A–D). Every one of those amendments predates the first release of the crate whose
+behaviour it changes, so all of them are legal under the rule above and none needs reclassifying as
+a supersession. 0026 and 0028–0032 were written — decision *and* amendments — in commit `f7b029b`
+(2026-09-05 10:06), while `reliar-transport-nats` 0.1.0 and `reliar-core` / `reliar-outbox` /
+`reliar-store-postgres` 0.2.0 were tagged at `f08f7cc` two hours later; the amendments therefore
+describe the code as first published, not a change to it. 0032's Amendment A concerns a
+`[dev-dependencies]` entry, which is not in the published graph at all. 0033's A–D describe
+`reliar-outbox` 0.3.0 and `reliar-store-postgres` 0.3.0, neither of which is released. From the next
+release onwards the freeze in ADR 0034 and the rule above line up: a version that is frozen on
+crates.io has a frozen ADR behind it.
+
 Everything the review queued is recorded; nothing was dropped. Decisions the SRS resolved without
 needing an ADR (promoting `tenant_id`/`expires_at`, constraint/index naming, the `deploy/` layout,
 the clock split, facade timing) are specified in the SRS text and referenced from the ADRs above.
@@ -143,7 +187,8 @@ the clock split, facade timing) are specified in the SRS text and referenced fro
 |---|---|
 | a trait signature or bound | `../architecture/phase1-contract.md`, then 0001, 0008 |
 | whether an item belongs in `reliar-core` or a feature crate | 0032, then 0027 |
-| whether a message goes through the outbox or straight to the transport | 0033, then `../architecture/routing-publisher-contract.md` |
+| whether a message goes through the outbox or straight to the transport | 0033 (the rule is `OutboxPolicy` — Amendment C), then `../architecture/routing-publisher-contract.md` §2.5 |
+| which type implements `Publisher`, and why the un-scoped one must not | 0033 Amendment D §4, then `../architecture/routing-publisher-contract.md` §4, §4.1 |
 | the NATS mapping, subjects, or the publisher | `../architecture/phase2-contract.md`, then 0026–0030 |
 | the `async-nats` pin or the NATS test substrate | 0031, then 0021, 0022 |
 | the envelope, metadata, or headers | 0003, 0004, 0010, 0011, 0012 |

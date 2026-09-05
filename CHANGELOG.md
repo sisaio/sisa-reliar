@@ -11,7 +11,81 @@ workspace version; per-crate changelog files are not generated.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`reliar-outbox` 0.3.0** — the outbox routing publisher (SRS §20.2, ADR 0033 incl. Amendment
+  D): one publish call that either stages a message in the outbox or sends it straight to the
+  transport, decided by configuration rather than by the call site. The application-facing object
+  **is** a `reliar_core::Publisher`.
+  - `OutboxSettings` gains three top-level fields — `enabled` (default `true`), `allowed_types`,
+    `disallowed_types` (both a new `MessageTypeNames` validated-list newtype) — with fallible
+    builder setters, `{prefix}ENABLED`/`{prefix}ALLOWED_TYPES`/`{prefix}DISALLOWED_TYPES`
+    `from_env` keys, and a `serde` repr that keeps validation from being bypassable through a
+    config document. An overlapping allow/disallow pair is a `SettingsError::OutOfRange` at
+    construction, on every path, never a silent tie-break.
+  - `OutboxPolicy` (module `policy`) is the routing rule as a value: `from_settings` validates
+    once, `decide(&MessageType) -> RouteKind` evaluates the rule's truth table — disallow wins, an
+    empty allow list means every type is durable, a non-empty allow list is exhaustive. Pure,
+    allocation-free, emits no tracing; previewable without a store or a transport.
+  - `OutboxStaging<Tx>` (module `staging`) is the storage-agnostic staging capability a provider
+    implements per transaction-handle type: `stage(&self, &mut Tx, &SerializedEnvelope)`.
+  - `OutboxPublisher<S, P, M = NoopMetrics>` (module `publisher`) composes a staging capability, a
+    `reliar_core::Publisher` and an `OutboxPolicy`. `in_transaction(&mut tx)` returns a
+    `ScopedOutboxPublisher`, which **implements `reliar_core::Publisher`** for the life of the
+    borrow — routed types staged in `tx`, direct types forwarded to the transport immediately and
+    outside it. `publish_direct(&SerializedEnvelope)` reaches only the direct path and returns
+    `DirectPublishError::TransactionRequired` for a routed type rather than silently downgrading.
+    `OutboxPublisher` itself deliberately does **not** implement `Publisher` — a `'static`,
+    `Clone`-able publisher here could be wired into an `OutboxDispatcher`, draining the outbox back
+    into itself; the guard is enforced by the compiler (`ScopedOutboxPublisher` is neither
+    `'static` nor `Clone`). Never retries. Nothing here serializes — the caller does, exactly as
+    for a bare `NatsPublisher`, so both routes carry the same `SerializedEnvelope` value and the
+    wire bytes never depend on the route taken. Emits one `reliar.outbox.route` span per call and a
+    new `OutboxMetrics::routed` hook.
+  - `test-support` gains `InMemoryTransaction`, an `OutboxStaging` impl on `InMemoryOutboxStore`,
+    `fail_next_enqueue`/`enqueue_call_count`, and a `RecordingMetrics::routed()` getter for
+    `OutboxMetrics::routed`.
+  - `tests/system`'s `e2e` suite proves the rule against a real Postgres and a real `JetStream`
+    stream: a routed type stages in `outbox` and only reaches the stream once a running
+    `OutboxDispatcher` drains it, a non-routed type reaches the stream immediately and never
+    appears as an `outbox` row, the "everything except" rollout shape and `enabled = false` both
+    behave as documented, and a direct publish survives a rollback of the caller's transaction —
+    the honest, non-transactional guarantee, asserted rather than merely documented
+    (`e5_routing_stages_and_streams_together.rs`, `e6_disallow_wins_and_the_switch.rs`).
+  - New guide `docs/guides/outbox-routing.md`: the rule's truth table, settings and env keys, both
+    rollout shapes, what the direct path costs you, previewing `OutboxPolicy` standalone, and why
+    `enabled = false` never stops the dispatcher draining. Linked from `README.md`,
+    `docs/guides/getting-started.md` and `docs/guides/nats.md`.
+  - `examples/nats-pub-sub` now publishes both its messages through an `OutboxPublisher` built from
+    `OutboxSettings::from_env("RELIAR_OUTBOX_")`, printing which route each took (read from
+    `outbox.policy().decide(..)`) — the same call site works unmodified whether `RELIAR_OUTBOX_*`
+    routes both messages through the outbox or sends one of them direct.
+  - `examples/axum-outbox`'s handler now publishes through `OutboxPublisher::in_transaction(&mut
+    tx).publish(&serialized)` rather than the store's own inherent `enqueue`, so the §20.1
+    reference integration doubles as the routing publisher's worked example.
+- **`reliar-store-postgres` 0.3.0** — implements `reliar_outbox::OutboxStaging<sqlx::Transaction<'_,
+  Postgres>>` for `PostgresOutboxStore<Ser>` (routing-publisher contract §6, ADR 0033 Amendment D):
+  the provider side of `ScopedOutboxPublisher::publish`'s routed path. No new migration, no SQL
+  text change, no `.sqlx/` change — `stage` reuses the same `search_path` handling and `insert_row`
+  helper as `enqueue`/`enqueue_with` (factored into one shared `insert_staged` function so the two
+  callers cannot drift), and persists `envelope.metadata.delivery.content_type` **verbatim** (the
+  caller's own content type) rather than the store's configured serializer — the one semantic
+  difference from the inherent `enqueue`/`enqueue_with`. `insert_row` is now generic over any
+  envelope body (not only `T: Message`), so it also persists the `SerializedEnvelope`'s own
+  `message_type`/`message_version` rather than deriving them from a Rust `Message` impl's
+  `TYPE`/`VERSION` constants — an observable behaviour change on the already-published `enqueue`
+  path, covered by a test that builds its envelope with `Envelope::from_parts` (naming a type no
+  `Message` impl in the test binary declares) rather than through any `Message`. The `OutboxStaging`
+  impl carries no `Ser: 'static` bound (it issues no statement through `self.serializer`) and no
+  `where 'c: 'a` bound on its transaction-handle lifetime — see the impl's rustdoc — a regression
+  covered by a real-Postgres test that spawns a scoped publish's future through `tokio::spawn`.
+
+### Changed
+
+- **`reliar-transport-nats` 0.1.1** — doc/dev-dependency-only patch: README gains a "Standalone
+  use" section showing the crate used with `reliar-core` alone, no `reliar-outbox`/
+  `reliar-store-postgres` in the graph; its doctest pulls in `reliar-core/json` as a
+  dev-dependency. No production code, public API, or SQL changed.
 
 ## 2026-09-05 — `reliar-core` 0.2.0 · `reliar-outbox` 0.2.0 · `reliar-store-postgres` 0.2.0 · `reliar-transport-nats` 0.1.0
 

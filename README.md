@@ -56,8 +56,9 @@ configuration error, never a silent no-op.
 - **A real database:** `examples/axum-outbox` — an Axum handler writing a business row and an
   outbox row in one transaction, `reliar-store-postgres`'s `migrate()`, and a dispatcher tied to
   graceful shutdown. Walkthrough: `docs/guides/postgres.md`.
-- **A real broker:** `examples/nats-pub-sub` — the outbox draining into NATS `JetStream`, and a
-  subscriber decoding what arrives. Walkthrough: `docs/guides/nats.md`.
+- **A real broker:** `examples/nats-pub-sub` — the outbox draining into NATS `JetStream`, a routed
+  and a directly-published message side by side, and a subscriber decoding what arrives.
+  Walkthrough: `docs/guides/nats.md`, routing: `docs/guides/outbox-routing.md`.
 - **The frozen public API:** `docs/architecture/phase1-contract.md` and `phase2-contract.md`; the
   crate map and both request/delivery paths: `docs/architecture/overview.md`.
 

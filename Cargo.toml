@@ -65,8 +65,8 @@ anyhow = "1"
 futures-util = "0.3"
 
 reliar-core = { path = "crates/reliar-core", version = "0.2.0", default-features = false }
-reliar-outbox = { path = "crates/reliar-outbox", version = "0.2.0" }
-reliar-store-postgres = { path = "crates/reliar-store-postgres", version = "0.2.0" }
+reliar-outbox = { path = "crates/reliar-outbox", version = "0.3.0" }
+reliar-store-postgres = { path = "crates/reliar-store-postgres", version = "0.3.0" }
 reliar-transport-nats = { path = "crates/reliar-transport-nats", version = "0.1.0" }
 
 [workspace.lints.rust]

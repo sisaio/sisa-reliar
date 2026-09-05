@@ -60,6 +60,7 @@ mod outbox_roundtrip;
 mod outbox_schema_verification;
 mod outbox_statement_timeout;
 mod outbox_stats;
+mod routing_enqueue;
 
 use std::process::ExitCode;
 
@@ -106,6 +107,7 @@ fn main() -> ExitCode {
     trials.extend(outbox_schema_verification::trials(rt));
     trials.extend(outbox_statement_timeout::trials(rt));
     trials.extend(outbox_stats::trials(rt));
+    trials.extend(routing_enqueue::trials(rt));
 
     let conclusion = libtest_mimic::run(&args, trials);
 

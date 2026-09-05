@@ -2,7 +2,10 @@
 
 The team's law for **Sisa Reliar**. The SRS (`../sisa-reliar-backlog/docs/srs.md`) is the architecture baseline; this file turns it
 into day-to-day decisions. The **skills** carry the detailed code patterns and load on demand.
-Change a decision via an ADR in `docs/decisions/` (SRS §38, §45).
+Change a decision via an ADR in `docs/decisions/` (SRS §38, §45). An **unshipped** decision may be
+revised by appending a dated amendment to its own record; once **shipped**, only a dated,
+behaviour-neutral correction may still be appended, and any material change needs a successor ADR
+that supersedes it — the rule and the ship test are in `docs/decisions/README.md`.
 
 > **Fastest way to be correct: copy an existing crate/trait/test.** Mirror the structure, names,
 > and file boundaries of a known-good slice rather than inventing.

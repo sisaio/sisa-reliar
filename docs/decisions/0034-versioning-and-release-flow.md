@@ -75,8 +75,8 @@ The narrowing matters, because §2 makes the common bump a minor one and Cargo r
 breaking, so most bumps do leave their dependents' ranges. An **admitted** bump does not: a
 dependency going `0.2.0 → 0.2.1` under a dependent's `^0.2.0` obliges no dependent release. Cargo
 resolves the already-published dependent onto the new patch on its own, so republishing it would
-change nothing a user can observe, and the pin in `[workspace.dependencies]` does not move either
-(`version = "0.2.0"` still matches). A dependent is still released when its *own* surface or
+change nothing a user can observe, and the `[workspace.dependencies]` pin does not move either —
+§4 states that rule once and in full. A dependent is still released when its *own* surface or
 behaviour changes (§2), or when anything else it inherits from the root manifest changes (§6).
 
 ### 4. The version bump lands in the change that requires it — not in a release PR
@@ -85,12 +85,21 @@ behaviour changes (§2), or when anything else it inherits from the root manifes
 version is already published also changes:
 
 - that crate's `[package] version`,
-- the `[workspace.dependencies]` `version` pin for it, whenever the new version leaves the pinned
-  requirement (Cargo enforces that half — a `path` dependency whose `version` requirement no longer
-  matches the local manifest is a hard resolution error, so a forgotten pin cannot compile; a patch
-  bump inside `^0.2.0` leaves the pin alone),
+- the `[workspace.dependencies]` `version` pin for it — **only when the new version leaves the
+  pinned requirement** (the pin rule, below),
 - the versions of the dependents whose requirement the new version leaves (§3),
 - `CHANGELOG.md`.
+
+**The pin rule, stated once.** A bump that the existing requirement already admits leaves
+`[workspace.dependencies]` untouched. `reliar-core` going `0.2.0 → 0.2.1` under a pin of
+`version = "0.2.0"` (i.e. `^0.2.0`) does **not** become `version = "0.2.1"`: the requirement still
+matches, so moving it would rewrite the resolved manifest of every dependent for nothing a user can
+observe — and on a dependent whose own version is frozen it would fail §6's freeze check and drag a
+bump out of a crate the change never touched. The pin moves only when the new version falls
+**outside** the requirement (`0.2.0 → 0.3.0` under `^0.2.0`), and it moves in the same pull request
+as the dependent bumps that same departure requires under §3. Cargo enforces this half by itself: a
+`path` dependency whose `version` requirement no longer matches the local manifest is a hard
+resolution error, so a pin move that *is* needed cannot be forgotten.
 
 `main` is therefore always publishable, and CI checks the bump on the PR (§6) instead of the release
 job discovering it on `main`.

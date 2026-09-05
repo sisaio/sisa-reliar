@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use reliar_core::{FailureKind, MessageType};
 
+use crate::policy::RouteKind;
 use crate::store::DeadReason;
 
 /// A metrics hook with no-op defaults, so it costs nothing unused and adding an instrument
@@ -36,6 +37,10 @@ pub trait OutboxMetrics: Send + Sync {
     fn oldest_pending_age(&self, _age: Duration) {}
     /// Rows deleted by the last purge pass.
     fn purged(&self, _published: u64, _dead: u64) {}
+    /// Called once per [`crate::OutboxPublisher`]/[`crate::ScopedOutboxPublisher`] publish that
+    /// resolved successfully, with which way the message went. Labels stay bounded: `route` has
+    /// two values, `message_type` is already an accepted label.
+    fn routed(&self, _route: RouteKind, _message_type: &MessageType) {}
 }
 
 /// The default [`OutboxMetrics`]: every hook is a no-op.

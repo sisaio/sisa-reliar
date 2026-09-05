@@ -127,6 +127,17 @@ reviews:
         and names the SRS sections it touches. Check the decision is actually decided (no hedging),
         that consequences include the costs, and that the index in `docs/decisions/README.md` is
         updated. Anything touching an SRS §45 protected area needs the ADR *before* the code.
+        ADRs here are **not immutable** — the rule is in `docs/decisions/README.md` and it turns on
+        whether the decision has shipped (its first crates.io release). An **unshipped** decision may
+        be revised by appending a dated `## Amendment X` section: the original text stays, the
+        sections it overrides gain a banner pointing at the amendment, and the index row reads
+        **Amended** with the dates. Do not ask for a successor ADR in that case. A **shipped**
+        decision that is reversed or materially changed does need a new ADR, with the old one marked
+        `Superseded by NNNN` and both index rows updated; a clarification that changes no behaviour
+        may still be appended, dated and labelled a correction. So flag: an amendment that rewrites
+        or deletes the original decision text instead of appending; an amendment on a decision that
+        is already released, where the change is behavioural; a missing supersession banner or index
+        update; and an undated amendment.
     - path: "deploy/**"
       instructions: >-
         Local dev infra only (`deploy/docker/`, `deploy/compose/`). No credential may be committed —
