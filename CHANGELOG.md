@@ -19,9 +19,12 @@ published; this file covers the workspace as a whole.
   the `Message` contract, `MessageType`, `ContentType`, `Serializer` + `JsonSerializer` (feature
   `json`), typed `Metadata` (`CorrelationMetadata`/`TraceContext`/`RoutingMetadata`/
   `DeliveryMetadata`/`EndpointAddress`), validating `Headers`, `Envelope<T>`/`SerializedEnvelope`
-  with its builder, and the `EnvelopeMapper` trait (SRS §9–§17).
+  with its builder, the `EnvelopeMapper` trait (SRS §9–§17), and the shared `Publisher` capability
+  trait (+ `Classify`/`FailureKind` for a publish error's transient/permanent verdict) and
+  `SettingsError`, the one error every `*Settings::from_env` returns (ADR 0032).
 - `reliar-outbox`: the storage-agnostic outbox contract and settings — `OutboxStore`/
-  `OutboxDeadLetters`/`Publisher` (+ `Classify`/`FailureKind`), their request/result types
+  `OutboxDeadLetters` (re-exporting `reliar-core`'s `Publisher`/`Classify`/`FailureKind` for
+  convenience), their request/result types
   (`AcquireRequest`, `AcquiredBatch`, `CompletedMessage`, `FailedMessage`, `FailureOutcome`,
   `DeadReason`, `MessageRef`, `PurgeRequest`/`PurgeReport`, `OutboxStats`, `DeadQuery`/
   `DeadLetterPage`, `PoisonedRow`), `OutboxRecord` + its builder, the pure `RetryPolicy`/
@@ -129,6 +132,46 @@ published; this file covers the workspace as a whole.
   no-ordering default, §43.A.11/13).
 - `crates/reliar-core/benches/serialization.rs` (criterion): `Envelope<T>` ⇄ `SerializedEnvelope`
   cost through `JsonSerializer`.
+- **`reliar-transport-nats`** (Phase 2, SRS §12, §12.3, §14–§16, §18, §19.4, §22–§23, §32–§33,
+  ADRs 0026–0031): Reliar's first real transport, depending on `reliar-core` alone (plus
+  `async-nats`) — never `reliar-outbox` — since `Publisher`/`Classify`/`FailureKind`/
+  `SettingsError` all live in `reliar-core` (ADR 0032). `NatsEnvelopeMapper` projects the canonical
+  envelope onto NATS headers plus a raw payload and back (`NatsWireMessage`, the `headers` module
+  of framework constants, `NatsMapError`), never through `async_nats`'s panicking `&str` header
+  conversions; `SubjectResolver`/`PrefixSubjects`/`DestinationSubjects` for subject selection, kept
+  a transport-side concern out of `reliar-core` (ADR 0027); `NatsPublisher<R>` — an at-least-once
+  `Publisher` over `JetStream` that awaits the server's ack before returning `Ok` (ADR 0028), with
+  `NatsSettings` (`Default` + builder + opt-in `from_env`, no server URL/credentials — the
+  application owns the connection and the stream, ADR 0029) and a `NatsPublishError`/`Classify`
+  table fixed by ADR 0030. `async-nats` pinned `default-features = false, features = ["jetstream"]`
+  (ADR 0031 §1); local/CI JetStream substrate (`deploy/compose`'s `nats` service, `test.yaml`'s
+  `docker run -js` step, the crate's own one-binary `nats`-suffixed test harness) per ADR 0031 §2–§4.
+- **`tests/system`** (new workspace package, `publish = false`, ADR 0031 §6): the only place
+  `reliar-store-postgres` and `reliar-transport-nats` meet, both as dev-dependencies so neither
+  provider dev-depends on the other. Its `e2e` suite (one Postgres **and** one NATS container,
+  or `DATABASE_URL`/`NATS_URL`, mirroring the provider harnesses' RELIAR-27 shape) proves the
+  phase end to end across four scenarios: **E1** — `OutboxDispatcher<PostgresOutboxStore,
+  NatsPublisher<PrefixSubjects>>` drains every enqueued row into a real `JetStream` stream, each
+  ending up `published_at` with a matching `reliar-message-id` header and byte-identical raw body,
+  plus a clean cancellation (every lease released, nothing dead-lettered) and a separate,
+  deterministic claim-stop trial proving rows past a capped batch are never touched; **E2** — a
+  stream deleted while the dispatcher keeps running leaves its row retryable (`attempts`
+  incremented, transient `StreamNotFound`) until a stream recapturing the same subject exists
+  again; **E3** — a worker that publishes but crashes before its own `complete` has its lease
+  reclaimed and the row republished, and `Nats-Msg-Id` inside the stream's `duplicate_window`
+  keeps the stream at one copy despite two publishes reaching the wire (SRS §22's duplicate
+  window, proven end to end); **E4** — an envelope permanently unrepresentable on this transport
+  (ADR 0026 §3) dead-letters on its first attempt, is never retried, and its `last_error` never
+  carries the offending header's value. Root `members` gains `"tests/*"`.
+- `examples/nats-pub-sub` (workspace member, `publish = false`): pool → `PostgresOutboxStore` →
+  `OutboxDispatcher` → `NatsPublisher` wiring, an explicitly created example `JetStream` stream
+  (never created by Reliar itself, ADR 0029), and a Core NATS subscriber task decoding what
+  arrives with `NatsEnvelopeMapper` — ids and message types only, never payload bytes (SRS §33).
+- `docs/guides/nats.md`: stream ownership and the copy-pasteable `create_stream` snippet, the
+  stream's `duplicate_window` versus retry backoff, subject strategy, the `NatsSettings`/env
+  table, which legal envelopes NATS cannot carry (tracked as RELIAR-35), the `NATS_URL` convention
+  for tests/examples, and the `/jsz?config=1` healthcheck note (ADR 0031). `docs/architecture/overview.md`'s
+  crate map and dependency rule now include `reliar-transport-nats` and `tests/system`.
 
 ### Fixed
 
@@ -142,6 +185,15 @@ published; this file covers the workspace as a whole.
 
 ### Changed
 
+- **`NatsSettings::max_in_flight` renamed to `batch_pipeline_depth`** ([ADR 0028 Amendment
+  B](docs/decisions/0028-jetstream-ack-is-the-only-publish-path.md#amendment-b--2026-09-05--the-pipeline-depth-setting-is-batch_pipeline_depth-not-max_in_flight),
+  contract §4.1): the field, the builder method, the env key (`{prefix}MAX_IN_FLIGHT` →
+  `{prefix}BATCH_PIPELINE_DEPTH`) and `NatsConfigError::ZeroInFlight` →
+  `NatsConfigError::ZeroBatchPipelineDepth`. `from_env` simply never looks up the old
+  `{prefix}MAX_IN_FLIGHT` key any more — a value set under it is silently **ignored**, not
+  rejected. The old name collided in meaning with `DispatcherSettings::max_in_flight`
+  (`reliar-outbox`), which bounds the dispatcher's concurrent publish tasks — a different knob
+  entirely.
 - **Minimum supported Rust version is now 1.88** (was 1.85). RUSTSEC-2026-0009 (`time` RFC 2822
   parsing, stack exhaustion) has no patched release that builds on 1.85, and a security advisory
   outranks the MSRV floor. See [ADR 0024](docs/decisions/0024-msrv-1-88-and-msrv-policy.md), which

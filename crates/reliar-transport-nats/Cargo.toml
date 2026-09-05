@@ -1,0 +1,63 @@
+[package]
+name = "reliar-transport-nats"
+version = "0.1.0"
+description = "NATS JetStream transport for Reliar: envelope↔header mapping, subject resolution, and an at-least-once Publisher."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+# `default-features = false` at the workspace pin: no `json` needed.
+reliar-core = { workspace = true }
+async-nats = { workspace = true }
+bytes.workspace = true
+uuid.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
+# `reliar.transport_nats.publish`/`publish_batch` spans and the `warn` on an unrecognised broker
+# error kind (S2, contract §4.4). S1 kept this dev-only; the publisher is this crate's first
+# runtime use.
+tracing.workspace = true
+# `tokio::time::{timeout, timeout_at, Instant}` bound `NatsPublisher::publish`/`publish_batch`
+# (ADR 0028 §2, contract §4.2's own code sketch) — a main dependency, not just a test one; the
+# contract's §1 manifest listed it only under S2's dev-deps, an omission this fixes the same way
+# S1 added `tracing` once its own code first used it.
+tokio.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde.workspace = true
+# `datetime!` for readable fixed instants in the round-trip proptest generator only.
+time = { workspace = true, features = ["macros"] }
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `watchdog` (RELIAR-27, ADR 0031 §4): testcontainers 0.27 has no reaper — removal is
+# `ContainerAsync::Drop`, full stop — so this is the only thing that removes a container on
+# SIGINT/SIGTERM/SIGQUIT. `Drop` alone still covers normal exit and panics.
+testcontainers = { workspace = true, features = ["watchdog"] }
+# One NATS-touching test binary (ADR 0031 §4, mirrors reliar-store-postgres's `postgres` binary).
+libtest-mimic.workspace = true
+criterion = { workspace = true, features = ["async_tokio"] }
+
+[[test]]
+name = "nats"
+path = "tests/nats/main.rs"
+harness = false
+
+[[bench]]
+name = "nats_publish"
+harness = false
+
+[[bench]]
+name = "nats_encode"
+harness = false

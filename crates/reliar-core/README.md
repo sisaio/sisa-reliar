@@ -27,6 +27,9 @@ this one; this one depends on nothing Reliar-specific (ADR 0002). Enforced in CI
   `EnvelopeBuilder`, the one conversion point between typed and wire forms (ADR 0003).
 - **Transport mapping (contract only in Phase 1):** the `EnvelopeMapper<M>` trait; no
   implementation ships until Phase 2.
+- **Shared primitives (ADR 0032):** `Publisher` (a capability every transport implements),
+  `Classify`/`FailureKind` (a publish error's transient/permanent verdict), and `SettingsError` —
+  vocabulary more than one capability needs, not storage/transport-specific itself.
 
 See `../../docs/architecture/envelope.md` for the model explained, and
 `../../docs/architecture/phase1-contract.md` §2 for the frozen signatures.

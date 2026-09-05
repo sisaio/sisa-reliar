@@ -20,6 +20,11 @@
 //!   [`SerializedEnvelope`] (`= Envelope<bytes::Bytes>`) are the same generic type; converting
 //!   between them ([`Envelope::map_body`]) can never drop or duplicate a field (ADR 0003).
 //!
+//! - **Owns vocabulary every capability shares, nothing storage/transport-specific.** An item
+//!   belongs here when it names no storage engine, broker or transport routing concept *and* more
+//!   than one Reliar capability needs it to talk to another — never merely because it is small
+//!   (ADR 0032).
+//!
 //! Every public error is a hand-rolled, `#[non_exhaustive]` enum with a wired
 //! [`std::error::Error::source`] — no `thiserror`, no `anyhow`. `Debug` on payload-bearing types
 //! elides the bytes; no `Display` here ever prints a payload, a header value, or a credential.
@@ -29,15 +34,19 @@
 
 mod content_type;
 mod envelope;
+mod failure;
 mod headers;
 mod ids;
 mod mapper;
 mod message;
 mod metadata;
+mod publisher;
 mod serializer;
+mod settings;
 
 pub use content_type::{ContentType, ContentTypeError};
 pub use envelope::{Envelope, EnvelopeBuilder, SerializedEnvelope};
+pub use failure::{Classify, FailureKind};
 pub use headers::{HeaderError, Headers};
 pub use ids::{ConversationId, CorrelationId, IdError, MessageId, RequestId};
 pub use mapper::EnvelopeMapper;
@@ -45,7 +54,9 @@ pub use message::{Message, MessageType};
 pub use metadata::{
     CorrelationMetadata, DeliveryMetadata, EndpointAddress, Metadata, RoutingMetadata, TraceContext,
 };
+pub use publisher::Publisher;
 pub use serializer::Serializer;
+pub use settings::SettingsError;
 
 #[cfg(feature = "json")]
 pub use serializer::{JsonError, JsonSerializer};

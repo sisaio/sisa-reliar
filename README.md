@@ -3,8 +3,18 @@
 High-performance Rust toolkit for transactional outbox, inbox, idempotency, durable
 messaging, and SQL-first background jobs.
 
-**Status: pre-0.1, Phase 1 in progress** — the workspace, toolchain, and CI are in place; the
+**Status: pre-0.1, Phase 2 in progress** — the workspace, toolchain, and CI are in place; the
 crates are being built. Nothing is published to crates.io yet, and the public API is unstable.
+
+## Crates
+
+| Crate | What it is |
+|---|---|
+| [`reliar-core`](crates/reliar-core) | Pure envelope/metadata/header model, ids, serialization — no storage or transport dependency. |
+| [`reliar-outbox`](crates/reliar-outbox) | The storage-agnostic transactional outbox: `OutboxStore`/`Publisher` traits, retry, `OutboxDispatcher`, settings, `test-support` fakes. |
+| [`reliar-store-postgres`](crates/reliar-store-postgres) | The PostgreSQL provider: schema, migrations, `migrate()`, `PostgresOutboxStore`. |
+| [`reliar-transport-nats`](crates/reliar-transport-nats) | The NATS `JetStream` transport: header projection, subject resolution, `NatsPublisher` (at-least-once, awaited ack). |
+| [`tests/system`](tests/system) | Cross-provider end-to-end tests (Postgres outbox → NATS), never published. |
 
 ## Guarantees
 
@@ -38,8 +48,10 @@ configuration error, never a silent no-op.
 - **A real database:** `examples/axum-outbox` — an Axum handler writing a business row and an
   outbox row in one transaction, `reliar-store-postgres`'s `migrate()`, and a dispatcher tied to
   graceful shutdown. Walkthrough: `docs/guides/postgres.md`.
-- **The frozen public API:** `docs/architecture/phase1-contract.md`; the crate map and both
-  request/delivery paths: `docs/architecture/overview.md`.
+- **A real broker:** `examples/nats-pub-sub` — the outbox draining into NATS `JetStream`, and a
+  subscriber decoding what arrives. Walkthrough: `docs/guides/nats.md`.
+- **The frozen public API:** `docs/architecture/phase1-contract.md` and `phase2-contract.md`; the
+  crate map and both request/delivery paths: `docs/architecture/overview.md`.
 
 ## Development
 
@@ -48,7 +60,7 @@ Requires the toolchain pinned in `rust-toolchain.toml` and Docker for the integr
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features   # integration tests start their own Postgres container
+cargo test --workspace --all-features   # integration tests start their own Postgres/NATS containers
 ```
 
 See `CONTRIBUTING.md` for the full gate list, the compose stack for the examples, the house

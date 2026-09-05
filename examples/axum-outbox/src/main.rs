@@ -21,8 +21,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use reliar_core::{Envelope, JsonSerializer, Message, SerializedEnvelope};
-use reliar_outbox::{Classify, FailureKind, OutboxDispatcher, Publisher};
+use reliar_core::{
+    Classify, Envelope, FailureKind, JsonSerializer, Message, Publisher, SerializedEnvelope,
+};
+use reliar_outbox::OutboxDispatcher;
 use reliar_store_postgres::{MigrateOptions, PostgresOutboxSettings, PostgresOutboxStore};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;

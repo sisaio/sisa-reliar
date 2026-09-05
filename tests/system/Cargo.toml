@@ -1,0 +1,42 @@
+[package]
+name = "reliar-system-tests"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+# Every dependency here is a **dev**-dependency, including both provider crates: this package has
+# no library or binary target of its own, only the `e2e` test binary below, so nothing here is
+# ever a `kind: null` (normal) edge in `cargo metadata` — which is what keeps the `msrv` job's
+# ADR-0025 dependent check from tripping on `reliar-store-postgres`'s elevated `rust-version`
+# (ADR 0031 §6).
+[dev-dependencies]
+reliar-core = { workspace = true, features = ["json"] }
+reliar-outbox = { workspace = true }
+reliar-store-postgres = { workspace = true, features = ["json"] }
+reliar-transport-nats = { workspace = true }
+sqlx = { workspace = true }
+async-nats = { workspace = true }
+bytes.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-util.workspace = true
+# `watchdog` (RELIAR-27, ADR 0031 §4/§6): testcontainers 0.27 has no reaper — removal is
+# `ContainerAsync::Drop`, full stop — so this is what removes a container on
+# SIGINT/SIGTERM/SIGQUIT. `Drop` alone still covers normal exit and panics.
+testcontainers = { workspace = true, features = ["watchdog"] }
+testcontainers-modules.workspace = true
+# One Postgres-and-NATS-touching test binary (ADR 0031 §6, mirrors reliar-store-postgres's
+# `postgres` binary and reliar-transport-nats's `nats` binary).
+libtest-mimic.workspace = true
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+harness = false

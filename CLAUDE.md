@@ -52,8 +52,11 @@ DBA · reviewer = reviewer + QA test-audit. The former `frontend` role was remov
    types, semantics) before engineers build providers against them in parallel.
 3. **Dependency rule.** `reliar-core` depends on no SQLx/Postgres/NATS/Kafka; `reliar-outbox` /
    `-inbox` / `-idempotency` depend only on `reliar-core`; providers
-   (`reliar-store-*`, `reliar-transport-*`) depend on the abstraction crates, never on each other.
-   `reliar-core` never becomes a catch-all.
+   (`reliar-store-*`, `reliar-transport-*`) depend on `reliar-core` directly and on an abstraction
+   crate **only when they implement a trait it owns** (ADR 0032) — never on each other.
+   `reliar-core` never becomes a catch-all: it owns shared vocabulary (`Envelope`, `Metadata`,
+   `Serializer`, `EnvelopeMapper`, `Publisher`, `Classify`/`FailureKind`, `SettingsError`), never
+   how a capability works.
 4. **Rust idioms:** small traits with associated `Error` types, **native async fns in traits**
    returning `impl Future + Send` (no `async-trait`), **generics + static dispatch** in hot paths
    (no `Box<dyn …>`), **hand-rolled error enums** (no `thiserror`/`anyhow` in public APIs),

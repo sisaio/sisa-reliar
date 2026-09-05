@@ -1,14 +1,14 @@
 //! `Publisher::publish_batch`'s default implementation loops over `publish` in order and does
 //! not stop at the first failure — every envelope gets its own positional result, so a partial
-//! batch failure never loses a per-message verdict (phase1-contract.md §3.5).
+//! batch failure never loses a per-message verdict (contract §2.8). Moved here from
+//! `reliar-outbox` when `Publisher`/`Classify`/`FailureKind` moved to `reliar-core` (ADR 0032).
 
 mod common;
 
 use std::fmt;
 use std::sync::Mutex;
 
-use reliar_core::SerializedEnvelope;
-use reliar_outbox::{Classify, FailureKind, Publisher};
+use reliar_core::{Classify, FailureKind, Publisher, SerializedEnvelope};
 
 #[derive(Debug)]
 struct FakeError;
@@ -28,8 +28,7 @@ impl Classify for FakeError {
 }
 
 /// Fails the message at the given zero-based positions, succeeds everywhere else, and records
-/// call order — the seam this test needs that `RecordingPublisher` (`test-support`, S3) does
-/// not exist to provide yet.
+/// call order.
 #[derive(Default)]
 struct PositionalPublisher {
     fail_at: Vec<usize>,

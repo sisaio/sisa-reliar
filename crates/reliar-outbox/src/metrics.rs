@@ -2,9 +2,8 @@
 
 use std::time::Duration;
 
-use reliar_core::MessageType;
+use reliar_core::{FailureKind, MessageType};
 
-use crate::publisher::FailureKind;
 use crate::store::DeadReason;
 
 /// A metrics hook with no-op defaults, so it costs nothing unused and adding an instrument

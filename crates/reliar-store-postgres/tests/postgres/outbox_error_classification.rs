@@ -4,7 +4,8 @@
 
 use crate::common;
 
-use reliar_outbox::{Classify, FailureKind, OutboxStore, WorkerId};
+use reliar_core::{Classify, FailureKind};
+use reliar_outbox::{OutboxStore, WorkerId};
 use reliar_store_postgres::{
     MigrateError, MigrateOptions, PostgresOutboxSettings, PostgresOutboxStore, PostgresStoreError,
 };

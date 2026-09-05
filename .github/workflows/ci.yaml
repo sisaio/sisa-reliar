@@ -69,12 +69,28 @@ jobs:
       # needs the image and tag as `const`s and compose needs them in `image:`; neither file can
       # read the other (an `include_str!` reaching outside the crate directory would not survive
       # `cargo package`), so the pins stay literal in both and this step is what keeps them equal.
-      - name: compose and the provider tests pin the same images
+      - name: compose and the tests pin the same images
+        env:
+          # This job installs no toolchain and asks `cargo metadata` for nothing but package
+          # names; stable is preinstalled on the runner, while rust-toolchain.toml's pinned
+          # channel would make the first cargo call download a whole toolchain to read them.
+          RUSTUP_TOOLCHAIN: stable
         run: |
           set -euo pipefail
           compose=deploy/compose/docker-compose.yaml
           scenario=crates/reliar-store-postgres/tests/postgres/outbox_pgdog.rs
+          harness=crates/reliar-transport-nats/tests/nats/main.rs
+          e2e=tests/system/tests/e2e/main.rs
           need() { [ -n "$1" ] || { echo "::error::$2"; exit 1; }; }
+          # Every Rust pin is a bare `const NAME: &str = "value";` at column 0 — the shape all
+          # three files use, and the only shape this reads.
+          konst() { sed -n "s|^const $1: &str = \"\(.*\)\";$|\1|p" "$2" 2>/dev/null || true; }
+          # The per-package comparisons below are keyed on the **package existing**, never on a
+          # file or a directory: a renamed or moved harness has to fail this job, not silently
+          # stop being compared. A guard that can quietly stop guarding is worse than no guard
+          # (ADR 0025 §4 learned this twice).
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          member() { printf '%s' "$metadata" | grep -q "\"name\":\"$1\""; }
 
           compose_pgdog=$(sed -n 's|^[[:space:]]*image: \(ghcr\.io/pgdogdev/pgdog:.*\)$|\1|p' "$compose")
           test_image=$(sed -n 's|^const PGDOG_IMAGE: &str = "\(.*\)";$|\1|p' "$scenario")
@@ -101,7 +117,56 @@ jobs:
             echo "::error::test.yaml's postgres_tag matrix does not cover compose's '$compose_pg'"
             exit 1
           fi
-          echo "pinned: $compose_pgdog · postgres:$compose_pg"
+          # The cross-provider e2e package pins Postgres as a const of its own (it starts the
+          # container itself, so it cannot reuse the provider crate's `.with_tag`).
+          if member reliar-system-tests; then
+            e2e_pg=$(konst POSTGRES_TAG "$e2e")
+            need "$e2e_pg" "no POSTGRES_TAG const found in $e2e (contract phase2 §7)"
+            if [ "$compose_pg" != "$e2e_pg" ]; then
+              echo "::error::PostgreSQL tag drifted: $compose has '$compose_pg', $e2e has '$e2e_pg'"
+              exit 1
+            fi
+          else
+            echo "reliar-system-tests does not exist yet — tests/system not compared"
+          fi
+          # NATS (ADR 0031). **Five** places pin it, two of them Rust consts: compose's `nats:`
+          # image, test.yaml's `docker run` step (a service container cannot enable JetStream —
+          # ADR 0031 §3), the transport crate's test harness, the `tests/system` e2e harness, and
+          # CONTRIBUTING.md's prose. All five are compared here.
+          compose_nats=$(sed -n 's|^[[:space:]]*image: \(nats:.*\)$|\1|p' "$compose")
+          # `nats:[0-9]` on purpose: it matches the image reference and not `nats://` in NATS_URL.
+          ci_nats=$(grep -hoE 'nats:[0-9][^ ]*' .github/workflows/test.yaml | sort -u)
+          need "$compose_nats" "no nats image found in $compose"
+          need "$ci_nats" "no nats image found in .github/workflows/test.yaml"
+          if [ "$compose_nats" != "$ci_nats" ]; then
+            echo "::error::NATS pin drifted: $compose has '$compose_nats', test.yaml has '$ci_nats'"
+            exit 1
+          fi
+          for pkg_file in "reliar-transport-nats:$harness" "reliar-system-tests:$e2e"; do
+            pkg=${pkg_file%%:*}
+            file=${pkg_file#*:}
+            if ! member "$pkg"; then
+              echo "$pkg does not exist yet — $file not compared"
+              continue
+            fi
+            nats_image=$(konst NATS_IMAGE "$file")
+            nats_tag=$(konst NATS_TAG "$file")
+            need "$nats_image" "no NATS_IMAGE const found in $file (contract phase2 §7)"
+            need "$nats_tag" "no NATS_TAG const found in $file (contract phase2 §7)"
+            if [ "$compose_nats" != "$nats_image:$nats_tag" ]; then
+              echo "::error::NATS pin drifted: $compose has '$compose_nats', $file has '$nats_image:$nats_tag'"
+              exit 1
+            fi
+          done
+          # CONTRIBUTING.md names the image in prose, for humans. Drift-only on purpose: dropping
+          # the mention is a documentation edit and passes, naming a *different* image does not.
+          doc_nats=$(grep -hoE 'nats:[0-9][^ `)]*' CONTRIBUTING.md | sort -u || true)
+          if [ -n "$doc_nats" ] && [ "$doc_nats" != "$compose_nats" ]; then
+            echo "::error::NATS pin drifted: $compose has '$compose_nats', CONTRIBUTING.md has '$doc_nats'"
+            exit 1
+          fi
+
+          echo "pinned: $compose_pgdog · postgres:$compose_pg · $compose_nats"
 
   check:
     name: fmt · clippy · doc · features
@@ -127,32 +192,135 @@ jobs:
       - run: cargo machete
 
   purity:
-    name: reliar-core stays pure
+    name: pure crates stay pure
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # No-op until reliar-core exists; the dependency rule (skill rust-library-design) is a
-      # hard gate from the moment it does. --prefix none prints one bare `name vX.Y.Z` per line,
-      # so the pattern anchors on the package name and cannot match a path or a feature string.
-      - name: no infrastructure crates in reliar-core
+      # The dependency rule (skill rust-library-design, conventions §2) is a hard gate: every
+      # crate named in `pure` below must exist and must be checked — a missing one fails the job
+      # rather than being skipped, and the count is asserted at the end so this step cannot
+      # report success having checked nothing. --prefix none prints one bare
+      # `name vX.Y.Z` per line, so the pattern anchors on the package name and cannot match a
+      # path or a feature string.
+      #
+      # `reliar-outbox` is checked alongside `reliar-core` since Phase 2: §43.B requires that
+      # adding a transport touches nothing in the outbox, and a provider dependency creeping into
+      # the abstraction crate is exactly the failure that constraint exists to catch. Add
+      # `-inbox` / `-idempotency` to `pure` when they land.
+      - name: no infrastructure crates in the pure crates
         run: |
           set -euo pipefail
           # Each cargo call is assigned before it is piped: inside an `if` condition `set -e` is
           # suspended and `pipefail` only reshapes the status the `if` swallows, so a broken
           # `cargo metadata`/`cargo tree` would otherwise be read as "clean" and pass the gate.
           metadata=$(cargo metadata --no-deps --format-version 1)
-          if ! printf '%s' "$metadata" | grep -q '"name":"reliar-core"'; then
-            echo "reliar-core does not exist yet — skipping"
-            exit 0
-          fi
           banned='^(sqlx|sqlx-core|sqlx-postgres|sqlx-macros|postgres|tokio-postgres|async-nats|nats|rdkafka|lapin|redis|deadpool-redis) '
-          tree=$(cargo tree -p reliar-core -e normal --all-features --prefix none)
-          if printf '%s\n' "$tree" | sort -u | grep -E "$banned"; then
-            echo "::error::reliar-core depends on an infrastructure crate (listed above)"
+          pure=(reliar-core reliar-outbox)
+          checked=0
+          for crate in "${pure[@]}"; do
+            if ! printf '%s' "$metadata" | grep -q "\"name\":\"$crate\""; then
+              echo "::error::$crate is listed as a pure crate but is not a workspace member"
+              exit 1
+            fi
+            checked=$((checked + 1))
+            tree=$(cargo tree -p "$crate" -e normal --all-features --prefix none)
+            if printf '%s\n' "$tree" | sort -u | grep -E "$banned"; then
+              echo "::error::$crate depends on an infrastructure crate (listed above)"
+              exit 1
+            fi
+            echo "$crate is clean"
+          done
+          if [ "$checked" -ne "${#pure[@]}" ]; then
+            echo "::error::expected ${#pure[@]} pure crates to be checked, checked $checked"
             exit 1
           fi
+          echo "pure crates checked: $checked"
+      # ADR 0031 §6: providers never depend on each other, in either direction and in **any**
+      # dependency kind — a dev-dependency is still a manifest dependency, still resolved at
+      # publish time, and still drags sqlx into the transport crate's build. That rule is the
+      # whole justification for `tests/system` existing as its own package, and until now nothing
+      # enforced it: a `reliar-store-postgres` dev-dep inside `reliar-transport-nats` passed every
+      # job. `cargo metadata --no-deps` lists exactly the workspace members' own declared
+      # dependencies with their `kind` (null = normal, "dev", "build"), which is precisely the
+      # manifest-level statement this rule is about.
+      - name: no provider depends on another provider
+        run: |
+          set -euo pipefail
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          violations=$(printf '%s' "$metadata" | jq -r '
+            .packages[] as $p
+            | $p.dependencies[]
+            | select(($p.name | test("^reliar-(store|transport)-"))
+                     and (.name | test("^reliar-(store|transport)-"))
+                     and (.name != $p.name))
+            | "  \($p.name) -> \(.name) (\(.kind // "normal") dependency)"
+          ')
+          if [ -n "$violations" ]; then
+            echo "$violations"
+            echo "::error::a provider crate depends on another provider crate; conventions §2 and ADR 0031 §6 forbid it in every dependency kind — a cross-provider test belongs in tests/system"
+            exit 1
+          fi
+          echo "no provider-on-provider dependency"
+      # ADR 0032: a provider depends on `reliar-core` directly, and on an abstraction crate
+      # (`reliar-outbox`, later `-inbox`/`-idempotency`) **only when it implements a trait that
+      # crate owns**. `reliar-store-postgres` implements `OutboxStore`, so its `reliar-outbox`
+      # edge is correct and stays. `reliar-transport-nats` implements only `reliar-core` traits
+      # (`Publisher`, `EnvelopeMapper`) since ADR 0032 moved `Publisher`/`Classify`/`FailureKind`/
+      # `SettingsError` into core, so `reliar-core` is the only Reliar dependency it may declare —
+      # in **any** kind, because a dev-dependency would compile the whole outbox (records, leases,
+      # the dispatcher) into a transport's test build and would be the edge that quietly grows
+      # back. Nothing enforced this, and a re-added `use reliar_outbox::Publisher` plus a manifest
+      # line would have passed every other job.
+      #
+      # The allow-list is per crate and explicit: a new transport adds one line, and the entry is
+      # the argument for why that edge exists. The membership probe means the gate cannot pass by
+      # the crate having disappeared.
+      - name: a transport declares only the abstraction crates it implements
+        run: |
+          set -euo pipefail
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          # "<package>:<space-separated reliar deps it may declare, in any kind>"
+          allowed=(
+            "reliar-transport-nats:reliar-core"
+            "reliar-store-postgres:reliar-core reliar-outbox"
+          )
+          checked=0
+          for entry in "${allowed[@]}"; do
+            pkg=${entry%%:*}
+            permitted=" ${entry#*:} "
+            if ! printf '%s' "$metadata" | jq -e --arg p "$pkg" \
+                 '[.packages[] | select(.name == $p)] | length == 1' >/dev/null; then
+              echo "::error::$pkg is listed here but is not a workspace member"
+              exit 1
+            fi
+            checked=$((checked + 1))
+            declared=$(printf '%s' "$metadata" | jq -r --arg p "$pkg" '
+              .packages[] | select(.name == $p) | .dependencies[]
+              | select(.name | startswith("reliar-"))
+              | "\(.name) \(.kind // "normal")"
+            ')
+            violations=""
+            while read -r name kind; do
+              [ -n "$name" ] || continue
+              case "$permitted" in
+                *" $name "*) ;;
+                *) violations="$violations  $pkg -> $name ($kind dependency)"$'\n' ;;
+              esac
+            done <<< "$declared"
+            if [ -n "$violations" ]; then
+              printf '%s' "$violations"
+              echo "::error::$pkg may declare only [${entry#*:} ] as Reliar dependencies (ADR 0032, conventions §2); an abstraction crate it implements nothing from does not belong in its manifest, in any dependency kind"
+              exit 1
+            fi
+            echo "$pkg declares only: ${entry#*:}"
+          done
+          if [ "$checked" -ne "${#allowed[@]}" ]; then
+            echo "::error::expected ${#allowed[@]} provider manifests to be checked, checked $checked"
+            exit 1
+          fi
+          echo "provider manifests checked: $checked"
 
   msrv:
     name: msrv 1.88

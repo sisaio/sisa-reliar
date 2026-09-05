@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use reliar_core::{MessageId, SerializedEnvelope};
-
-use crate::publisher::{Classify, FailureKind, Publisher};
+use reliar_core::{Classify, FailureKind, MessageId, Publisher, SerializedEnvelope};
 
 /// Records every publish, **in order, with duplicates** — duplicates are the assertion, not a
 /// bug: they are what a crash-after-publish or a reclaimed lease produces (SRS §22). Never fails.

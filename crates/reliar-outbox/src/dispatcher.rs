@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Duration;
 
-use reliar_core::{MessageType, SerializedEnvelope};
+use reliar_core::{Classify, FailureKind, MessageType, Publisher, SerializedEnvelope};
 use tokio::sync::Semaphore;
 use tokio::task::{AbortHandle, Id as TaskId, JoinError, JoinSet};
 use tokio::time::Instant;
@@ -59,7 +59,6 @@ use tracing::Instrument as _;
 use crate::error::ConfigError;
 use crate::metrics::{NoopMetrics, OutboxMetrics};
 use crate::ordering::Ordering;
-use crate::publisher::{Classify, FailureKind, Publisher};
 use crate::retry::{ExponentialBackoff, RetryPolicy};
 use crate::settings::DispatcherSettings;
 use crate::store::{

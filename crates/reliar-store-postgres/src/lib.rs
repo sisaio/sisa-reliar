@@ -67,7 +67,7 @@ mod store;
 
 pub use error::{EnqueueError, PostgresStoreError};
 pub use migrate::{MigrateError, MigrateOptions, migrate};
-pub use reliar_outbox::SettingsError;
+pub use reliar_core::SettingsError;
 pub use settings::PostgresOutboxSettings;
 pub use store::{EnqueueOptions, PostgresOutboxStore};
 

@@ -55,7 +55,7 @@ serde_json.workspace = true
 # panics; this is the belt to that braces.
 testcontainers = { workspace = true, features = ["watchdog"] }
 testcontainers-modules.workspace = true
-libtest-mimic = "0.8"
+libtest-mimic.workspace = true
 # Test-only: the recording-subscriber pattern for §43.A.36's "warns on a same-named table"
 # assertion. Not a workspace dependency — no other crate's tests need it yet.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }

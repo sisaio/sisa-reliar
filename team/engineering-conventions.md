@@ -56,20 +56,34 @@ crates/<crate>/
 **Crate dependency rule (inward only):**
 
 ```
-reliar-store-postgres ──┐
-reliar-transport-nats ──┼──▶ reliar-outbox / -inbox / -idempotency ──▶ reliar-core
-reliar-messaging ───────┘                                                           ▲
-reliar-scheduler ──────────────────────────────────────────────────────────────────┘
+reliar-store-postgres ──┬──▶ reliar-outbox / -inbox / -idempotency ──▶ reliar-core
+reliar-messaging ───────┘                                                   ▲
+reliar-transport-nats ─────────────────────────────────────────────────────▶│
+reliar-scheduler ──────────────────────────────────────────────────────────▶┘
 ```
 
-Providers never depend on each other; abstraction crates depend only on `reliar-core`;
-`reliar-core` depends on nothing Reliar-specific and nothing storage/transport-specific.
-Create a crate **only when its implementation begins** (SRS §6).
+Providers never depend on each other, in **any** dependency kind. `reliar-core` depends on nothing
+Reliar-specific and nothing storage/transport-specific. A provider depends on `reliar-core`
+**directly**, and on an abstraction crate **only when it implements a trait that crate owns**
+(ADR 0032): `reliar-store-postgres` implements `OutboxStore`, so it depends on `reliar-outbox`;
+`reliar-transport-nats` implements only core traits (`Publisher`, `EnvelopeMapper`), so it depends
+on `reliar-core` alone. Create a crate **only when its implementation begins** (SRS §6).
+
+**What belongs in `reliar-core`** — SRS §18 forbids a catch-all, and the test is *kind*, not size
+(ADR 0032). An item belongs there when it names no storage engine, broker or transport routing
+concept **and** is vocabulary more than one capability needs to talk to another: `Envelope`,
+`Metadata`, `Headers`, `Serializer`, `EnvelopeMapper`, `Publisher`, `Classify`/`FailureKind`,
+`SettingsError`. An item stays out when it encodes *how* a capability works: `OutboxStore`,
+`OutboxRecord`, `RetryPolicy`, the dispatcher and its settings are outbox mechanics;
+`SubjectResolver` and every wire detail are the transport's (ADR 0027).
 
 ## 3. Traits, dispatch & async (SRS §3, §19, §30, §34)
 
-- **Small capability traits** (`OutboxStore`, `Publisher`, `Serializer`, `EnvelopeMapper`,
-  `InboxStore`, …) with an associated `type Error`. Never a God trait.
+- **Small capability traits** with an associated `type Error`. Never a God trait. `Publisher`,
+  `Serializer` and `EnvelopeMapper` are **`reliar-core`**'s (ADR 0032); `OutboxStore` /
+  `OutboxDeadLetters` are `reliar-outbox`'s, `InboxStore` will be `reliar-inbox`'s. `reliar-outbox`
+  re-exports `Publisher`/`Classify`/`FailureKind`/`SettingsError` for convenience, but the
+  **canonical path in every signature and doc is `reliar_core::`**.
 - **Native async fns in traits** — declared as `fn f(&self, …) -> impl Future<Output = Result<…,
   Self::Error>> + Send;` so callers can spawn. **No `async-trait` crate.**
 - **Static dispatch by default**: `OutboxDispatcher<S: OutboxStore, P: Publisher>`. `Arc<T>` is fine.

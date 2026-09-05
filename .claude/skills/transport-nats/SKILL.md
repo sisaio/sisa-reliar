@@ -9,7 +9,10 @@ metadata:
 
 Goal (SRS §42 Phase 2): prove the canonical Envelope and the `EnvelopeMapper` model with a real
 broker **without touching `reliar-outbox`** (SRS §43.21). Dependencies: `async-nats`,
-`reliar-core`, `reliar-outbox` (for `Publisher` + `Classify`). Nothing NATS-specific leaks upstream.
+`reliar-core` **only** — `EnvelopeMapper`, `SerializedEnvelope`, `Metadata`, and (since ADR 0032)
+`Publisher`, `Classify`, `FailureKind`, `SettingsError`. **No `reliar-outbox` dependency**, in
+`[dependencies]` or `[dev-dependencies]`: this crate implements no trait the outbox owns. Nothing
+NATS-specific leaks upstream.
 
 ## Mapping — canonical Envelope → NATS message (SRS §15–§16)
 
@@ -49,7 +52,7 @@ pub struct PrefixSubjects { pub prefix: String }
 
 ```rust
 pub struct NatsPublisher<R = PrefixSubjects> { js: async_nats::jetstream::Context, mapper: NatsEnvelopeMapper, subjects: R }
-impl<R: SubjectResolver> Publisher for NatsPublisher<R> { type Error = NatsPublishError;
+impl<R: SubjectResolver> reliar_core::Publisher for NatsPublisher<R> { type Error = NatsPublishError;
     fn publish(&self, e: &SerializedEnvelope) -> impl Future<Output = Result<(), NatsPublishError>> + Send {
         async move { let msg = self.mapper.encode(e)?; let ack = self.js.publish_with_headers(self.subjects.subject(e), msg.headers, msg.payload).await?;
                      ack.await?; Ok(()) } } }

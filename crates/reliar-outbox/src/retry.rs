@@ -3,8 +3,9 @@
 use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
+use reliar_core::FailureKind;
+
 use crate::error::ConfigError;
-use crate::publisher::FailureKind;
 use crate::store::{DeadReason, FailureOutcome};
 
 /// Decides what happens after a publish failure. **Pure**: I/O-free and clock-free — it returns

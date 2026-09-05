@@ -5,10 +5,9 @@ use core::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use reliar_core::MessageId;
+use reliar_core::{Classify, FailureKind, MessageId};
 use time::OffsetDateTime;
 
-use crate::publisher::{Classify, FailureKind};
 use crate::record::{OutboxRecord, truncate_error};
 use crate::store::{
     AcquireRequest, AcquiredBatch, CompletedMessage, DeadLetterPage, DeadQuery, DeadReason,

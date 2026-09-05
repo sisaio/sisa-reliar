@@ -49,8 +49,14 @@ reliar-store-postgres  → reliar-outbox, reliar-core, sqlx, time, tracing
 
 - **`reliar-core` is pure.** No sqlx, no postgres, no broker client, no transport routing concept
   (no Kafka partition key, no Rabbit exchange, no NATS subject). CI gates this with
-  `cargo tree -p reliar-core -e normal` (ADR 0002).
+  `cargo tree -p reliar-core -e normal` (ADR 0002). Purity is about *kind*, not size: core owns the
+  vocabulary every capability shares, and ADR 0032 states the two-part test an item must pass to
+  live there.
 - **`reliar-outbox` never depends on a provider**, and a provider never depends on another provider.
+- **A provider depends on `reliar-core` directly, and on an abstraction crate only when it
+  implements a trait that crate owns** (ADR 0032). `reliar-store-postgres` implements `OutboxStore`,
+  so it depends on `reliar-outbox`; `reliar-transport-nats` implements only core traits
+  (`Publisher`, `EnvelopeMapper`), so it depends on `reliar-core` alone.
 - Phase 1 creates **exactly these three crates** plus `examples/outbox-basic`,
   `examples/axum-outbox`, and `tests/system`. No `reliar`, `reliar-inbox`, `reliar-idempotency`,
   `reliar-transport-*` (SRS §6: crates are created when implementation begins).
@@ -456,6 +462,89 @@ pub trait EnvelopeMapper<M> {
 No implementation ships in Phase 1. The reserved `reliar-*` header names a mapper writes are
 listed in SRS §14 and are a public contract.
 
+### 2.8 Publication and failure classification (relocated from `reliar-outbox` by ADR 0032)
+
+`Publisher` is the wire side of *any* Reliar capability that emits — the outbox dispatcher today,
+`reliar-messaging` and the scheduler later. It names one Reliar type (`SerializedEnvelope`) and no
+broker, so it lives in core. `crates/reliar-core/src/publisher.rs`:
+
+```rust
+pub trait Publisher: Send + Sync {
+    type Error: std::error::Error + Send + Sync + 'static + Classify;
+
+    fn publish(&self, envelope: &SerializedEnvelope)
+        -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Results are **positional** — one per envelope, so a partial batch failure never loses a
+    /// per-message verdict.  The default loops; transports with a native batch API override it.
+    fn publish_batch(&self, envelopes: &[SerializedEnvelope])
+        -> impl Future<Output = Vec<Result<(), Self::Error>>> + Send
+    { async move { let mut out = Vec::with_capacity(envelopes.len());
+                   for e in envelopes { out.push(self.publish(e).await); } out } }
+}
+```
+
+`Classify` is **not** publisher-only — `OutboxStore::Error` carries the same bound (§3.4), and
+`reliar-store-postgres` implements it without ever naming `Publisher`. It is therefore its own
+module, `crates/reliar-core/src/failure.rs`:
+
+```rust
+/// Carried **by the error type**, not by the publisher: the error value is what crosses the
+/// `JoinSet` boundary into the dispatcher, so it must carry its own verdict (ADR 0008).
+pub trait Classify { fn kind(&self) -> FailureKind; }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureKind { Transient, Permanent }
+```
+
+**v0.1's dispatcher calls `publish`, not `publish_batch`** — it needs a per-message outcome and a
+per-message timeout, and the default `publish_batch` is a loop over `publish` anyway. The method is
+in the trait now because the shape is semver-visible (ADR 0008); it is covered by a direct test of
+the default implementation, not by a dispatcher test, and a transport that overrides it owns
+proving its positional results.
+
+A publish **timeout classifies as `Transient`**. A payload the broker rejects as too large
+classifies as `Permanent` — retrying forever cannot help (SRS §24.1).
+
+Rustdoc in core may reference `reliar-outbox`'s `RetryPolicy` and `OutboxStore` in **prose or a code
+span, never as an intra-doc link** — a doc link out of core points the wrong way and fails
+`RUSTDOCFLAGS="-D warnings" cargo doc`.
+
+`reliar-outbox` re-exports all three (`pub use reliar_core::{Classify, FailureKind, Publisher};`)
+as convenience aliases, because `Classify` is a bound `OutboxStore` imposes. The **canonical path in
+every signature, contract and rustdoc is `reliar_core::`**.
+
+### 2.9 `SettingsError` — the one error every `from_env` returns (relocated by ADR 0032)
+
+`crates/reliar-core/src/settings.rs` holds **only** this type. Every `*Settings` struct and every
+private `env_*` parser stays in the crate that owns the setting (§3.7 for the outbox,
+`reliar-store-postgres` and `reliar-transport-nats` for theirs).
+
+```rust
+#[derive(Clone, Debug, PartialEq)] #[non_exhaustive]
+pub enum SettingsError {
+    Parse { key: String, value_kind: &'static str },   // never echoes the value
+    OutOfRange { key: String, message: &'static str },
+}
+/// **Public constructors, because every crate's `from_env` returns this type.**  The enum is
+/// `#[non_exhaustive]`, so a foreign crate cannot build a variant with struct-literal syntax —
+/// without these it is forced into a parallel error type, and a host wiring two `from_env` calls
+/// then handles two unrelated errors for the same failure (ADR 0019, §7 I3).
+impl SettingsError {
+    /// The variable was present but did not parse.  `value_kind` names the expected shape
+    /// (`"u32"`, `"milliseconds"`); the offending **value is never carried**.
+    #[must_use] pub fn parse(key: impl Into<String>, value_kind: &'static str) -> Self;
+    /// The variable parsed but is outside the range the setting accepts.
+    #[must_use] pub fn out_of_range(key: impl Into<String>, message: &'static str) -> Self;
+    /// The full environment-variable name, prefix included — what an operator has to go fix.
+    #[must_use] pub fn key(&self) -> &str;
+}
+```
+
+`reliar-outbox`, `reliar-store-postgres` and `reliar-transport-nats` each re-export it
+(`pub use reliar_core::SettingsError;`) so a host importing one crate's settings gets the error with
+them.
+
 ---
 
 ## 3. `reliar-outbox`
@@ -824,39 +913,15 @@ pub trait OutboxDeadLetters: Send + Sync {
 }
 ```
 
-### 3.5 `Publisher` and classification
+### 3.5 `Publisher` and classification — moved to §2.8 (ADR 0032)
 
-```rust
-pub trait Publisher: Send + Sync {
-    type Error: std::error::Error + Send + Sync + 'static + Classify;
+`Publisher`, `Classify` and `FailureKind` now live in **`reliar-core`** — see [§2.8](#28-publication-and-failure-classification-relocated-from-reliar-outbox-by-adr-0032)
+for the signatures, which are unchanged. `reliar-outbox` re-exports them
+(`pub use reliar_core::{Classify, FailureKind, Publisher};`) because `Classify` is a bound
+`OutboxStore::Error` imposes (§3.4), but the canonical path is `reliar_core::`.
 
-    fn publish(&self, envelope: &SerializedEnvelope)
-        -> impl Future<Output = Result<(), Self::Error>> + Send;
-
-    /// Results are **positional** — one per envelope, so a partial batch failure never loses a
-    /// per-message verdict.  The default loops; transports with a native batch API override it.
-    fn publish_batch(&self, envelopes: &[SerializedEnvelope])
-        -> impl Future<Output = Vec<Result<(), Self::Error>>> + Send
-    { async move { let mut out = Vec::with_capacity(envelopes.len());
-                   for e in envelopes { out.push(self.publish(e).await); } out } }
-}
-
-/// Carried **by the error type**, not by the publisher: the error value is what crosses the
-/// `JoinSet` boundary into the dispatcher, so it must carry its own verdict (ADR 0008).
-pub trait Classify { fn kind(&self) -> FailureKind; }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FailureKind { Transient, Permanent }
-```
-
-**v0.1's dispatcher calls `publish`, not `publish_batch`** — it needs a per-message outcome and a
-per-message timeout, and the default `publish_batch` is a loop over `publish` anyway. The method is
-in the trait now because the shape is semver-visible (ADR 0008); it is covered by a direct test of
-the default implementation, not by a dispatcher test, and a transport that overrides it owns
-proving its positional results.
-
-A publish **timeout classifies as `Transient`**. A payload the broker rejects as too large
-classifies as `Permanent` — retrying forever cannot help (SRS §24.1).
+The dispatcher's use of them (§3.9) is unaffected: `OutboxDispatcher<S, P>` still requires
+`P: Publisher` and `P::Error: Classify`, and still calls `publish`, not `publish_batch`.
 
 ### 3.6 Retry policy
 
@@ -963,25 +1028,12 @@ impl OutboxSettings {
     /// for an unparseable or out-of-range value — never a silent fallback.
     pub fn from_env(prefix: &str) -> Result<Self, SettingsError>;
 }
-#[derive(Clone, Debug, PartialEq)] #[non_exhaustive]
-pub enum SettingsError {
-    Parse { key: String, value_kind: &'static str },   // never echoes the value
-    OutOfRange { key: String, message: &'static str },
-}
-/// **Public constructors, because every provider's `from_env` returns this type.**  The enum is
-/// `#[non_exhaustive]`, so `reliar-store-postgres` (a different crate) cannot build a variant with
-/// struct-literal syntax — without these it is forced into a parallel error type, and a host
-/// wiring two `from_env` calls then handles two unrelated errors for the same failure.
-impl SettingsError {
-    /// The variable was present but did not parse.  `value_kind` names the expected shape
-    /// (`"u32"`, `"milliseconds"`); the offending **value is never carried**.
-    #[must_use] pub fn parse(key: impl Into<String>, value_kind: &'static str) -> Self;
-    /// The variable parsed but is outside the range the setting accepts.
-    #[must_use] pub fn out_of_range(key: impl Into<String>, message: &'static str) -> Self;
-    /// The full environment-variable name, prefix included — what an operator has to go fix.
-    #[must_use] pub fn key(&self) -> &str;
-}
 ```
+
+`SettingsError` itself lives in **`reliar-core`** and is defined in
+[§2.9](#29-settingserror--the-one-error-every-from_env-returns-relocated-by-adr-0032) (ADR 0032);
+`reliar-outbox` re-exports it. The `env_*` parsing helpers behind `from_env` stay private to this
+crate.
 
 **The library never reads the environment implicitly.** No constructor, `Default` or `build()`
 touches `std::env` (ADR 0019).
@@ -1911,4 +1963,12 @@ contract rather than implementation.
 | # | Finding | Resolution |
 |---|---|---|
 | N1 | **Blocker.** §43.A.23 was no longer proven: with the L1 claim gate in place, `Semaphore::new(1_000_000)` keeps `dispatcher_bounds_concurrency_to_max_in_flight` green, because the gate alone caps the peak. Engineer's accounting confirmed: a claim requests at most `max_in_flight - outstanding_count`; a resolved task's move from `outstanding` into `unwritten_*` is net-zero in that count, so the gate never re-opens a slot before the underlying permit is already free — under a **conforming** store `acquire_owned()` never waits | **Keep the semaphore; the guarantee is bounded twice, deliberately.** The gate bounds *leased rows*, the semaphore bounds *concurrent publishes* — §43.A.23's actual wording. Removing it would make a promise about broker concurrency conditional on every third-party `OutboxStore` honouring `batch_size`, and would leave the K3 "not yet started" state reachable only through a scheduling race with no deterministic test. Both are proven with one test-only fake: a delegating `OverDeliveringStore` in `tests/common/` that rewrites the acquired batch size, so `outstanding` (20) genuinely exceeds permits (4). §43.A.23 stands as written — no reframing |
+
+### Amended by ADR 0032 — shared primitives move to `reliar-core` (2026-09-05)
+
+| # | Finding | Resolution |
+|---|---|---|
+| P1 | `Publisher`, `Classify` and `FailureKind` sat in `reliar-outbox` because the dispatcher was their first consumer. That made **publication an outbox concept**: `reliar-transport-nats` — which has no store, record, lease, retry or dispatcher in it — had to depend on the transactional-outbox crate to name a publish failure, and Phase 3's `reliar-messaging` (SRS §36: direct sends and request/reply that never touch a store) would have inherited the same edge | **All three move to `reliar-core`**, signatures byte-identical, in two modules: `failure.rs` (`Classify`, `FailureKind`) and `publisher.rs` (`Publisher`). `Classify` is deliberately *not* in `publisher.rs` — `OutboxStore::Error` carries the same bound and `reliar-store-postgres` implements it without naming `Publisher`. Core's dependency graph gains nothing; `async-nats` stays banned from core **and** `reliar-outbox`. See §2.8 and ADR 0032 §1 for the kind test that keeps core from becoming SRS §18's catch-all |
+| P2 | I3 (2026-09-04) already ruled `SettingsError` is *the* error every `from_env` returns and gave it public constructors so foreign crates could build it — but left it defined in `reliar-outbox`. It was the second of exactly two reasons `reliar-transport-nats` depended on that crate, so moving `Publisher` alone would have kept the whole edge alive for a bad-environment-variable enum | **`SettingsError` moves to `reliar-core`** (§2.9). I3's ruling is unchanged and now has an address that matches it. Only the type moves: every `*Settings` struct and every private `env_*` parser stays in the crate that owns the setting, and promoting the parsers to a shared public helper is explicitly **not** decided (ADR 0032 §2) |
+| P3 | With nothing left to import, `reliar-transport-nats`'s `reliar-outbox` dependency had no justification | **Dropped from its `[dependencies]`, and not added as a dev-dependency.** The dependency rule is sharpened in §1: a provider depends on `reliar-core` directly and on an abstraction crate only when it implements a trait that crate owns. `reliar-store-postgres` keeps `reliar-outbox` — it implements `OutboxStore`/`OutboxDeadLetters`. `reliar-outbox` keeps re-exports of all four items as convenience aliases; the canonical path everywhere is `reliar_core::` |
 

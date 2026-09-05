@@ -6,8 +6,9 @@ name: reliar-dev
 
 services:
   postgres:
-    # This tag and the PgDog one below are kept equal to the provider tests' pins by ci.yaml's
-    # "compose and the provider tests pin the same images" step — bump them together.
+    # This tag, the NATS one and the PgDog one below are kept equal to the tests' pins (and to
+    # test.yaml's) by ci.yaml's "compose and the tests pin the same images" step — bump
+    # them together.
     image: postgres:18-alpine
     env_file: [configs/postgres.env]
     secrets: [postgres_password]
@@ -22,6 +23,34 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # JetStream server for the Phase-2 transport (ADR 0031). Kept equal to the transport tests' pin
+  # by the same ci.yaml step as the images above.
+  #
+  # `-js` is required: the image's default command starts nats-server from
+  # /etc/nats/nats-server.conf, which has JetStream **off** — and every Reliar publish awaits a
+  # JetStream ack (ADR 0028), so a server without it fails on the first message. `-m 8222` turns
+  # on the monitoring endpoint the healthcheck needs.
+  nats:
+    image: nats:2.14-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      # Monitoring, for humans: http://127.0.0.1:8222/jsz?config=1 and /varz.
+      - "127.0.0.1:8222:8222"
+    healthcheck:
+      # A real JetStream probe. The obvious ones are vacuous, verified against this exact image:
+      # /healthz, /healthz?js-enabled-only=true and /healthz?js-server-only=true all answer
+      # {"status":"ok"} on a server started *without* `-js`. /jsz reports "disabled": true and
+      # omits store_dir in that case, so grepping for store_dir fails both when the server is
+      # down and when it is up without JetStream — which is the only kind of healthcheck worth
+      # writing (same lesson as the PgDog probe below).
+      test: ["CMD-SHELL", "wget -q -O- 'http://127.0.0.1:8222/jsz?config=1' | grep -q store_dir"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No volume on purpose: JetStream storage stays inside the container, so a stream created by
+    # hand cannot survive a `down`/`up` and quietly change what the next example or test sees.
 
   # Transaction-mode pooler, for reproducing the pooler behaviour of decision #28 by hand.
   # Decision #31: the pooler is **PgDog** — the same image and tag the provider's pooler scenario

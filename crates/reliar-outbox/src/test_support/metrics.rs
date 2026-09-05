@@ -3,10 +3,9 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use reliar_core::MessageType;
+use reliar_core::{FailureKind, MessageType};
 
 use crate::metrics::OutboxMetrics;
-use crate::publisher::FailureKind;
 use crate::store::DeadReason;
 
 /// Records every [`OutboxMetrics`] call for assertion. Each getter below has the same name as
